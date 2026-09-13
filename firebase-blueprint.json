@@ -1,0 +1,81 @@
+{
+  "entities": {
+    "expense": {
+      "title": "Expense",
+      "description": "Care Elevator expense tracking item",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string" },
+        "invoice": { "type": "string" },
+        "category": { "type": "string" },
+        "subCategory": { "type": "string" },
+        "liftNo": { "type": "string" },
+        "owner": { "type": "string" },
+        "location": { "type": "string" },
+        "description": { "type": "string" },
+        "amount": { "type": "number" },
+        "account": { "type": "string" },
+        "isAdvance": { "type": "boolean" },
+        "advancePerson": { "type": "string" },
+        "advanceStatus": { "type": "string" },
+        "rowId": { "type": "number" }
+      },
+      "required": ["date", "category", "amount"]
+    },
+    "income": {
+      "title": "Income",
+      "description": "Care Elevator income invoice record",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string" },
+        "source": { "type": "string" },
+        "liftNo": { "type": "string" },
+        "owner": { "type": "string" },
+        "location": { "type": "string" },
+        "totalAmt": { "type": "number" },
+        "discountAmt": { "type": "number" },
+        "netAmt": { "type": "number" },
+        "paidAmt": { "type": "number" },
+        "dueAmt": { "type": "number" },
+        "description": { "type": "string" },
+        "account": { "type": "string" },
+        "rowId": { "type": "number" }
+      },
+      "required": ["date", "source", "totalAmt", "paidAmt"]
+    },
+    "setting": {
+      "title": "Setting",
+      "description": "Configuration metadata like owner names",
+      "type": "object",
+      "properties": {
+        "list": { "type": "array" }
+      }
+    },
+    "userRole": {
+      "title": "UserRole",
+      "description": "Role mapping for users",
+      "type": "object",
+      "properties": {
+        "role": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/expenses/{expenseId}": {
+      "schema": "expense",
+      "description": "Expense records collection"
+    },
+    "/incomes/{incomeId}": {
+      "schema": "income",
+      "description": "Income records collection"
+    },
+    "/settings/{settingId}": {
+      "schema": "setting",
+      "description": "Application configurations"
+    },
+    "/userRoles/{userEmail}": {
+      "schema": "userRole",
+      "description": "User permission roles"
+    }
+  }
+}

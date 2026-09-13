@@ -1,0 +1,12 @@
+{
+  "projectId": "care-elevator-accounts",
+  "appId": "1:414995152902:web:d93573d6721825840dc387",
+  "apiKey": "AIzaSyCa2msVVa0Ho46gcQWCJS9BRbLXK_JU6i4",
+  "authDomain": "care-elevator-accounts.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "care-elevator-accounts.firebasestorage.app",
+  "messagingSenderId": "414995152902",
+  "measurementId": "G-F9CH1GJWN1",
+  "oAuthClientId": "",
+  "recaptchaSiteKey": ""
+}

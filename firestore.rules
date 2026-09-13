@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Function to check if user is logged into Firebase
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Function to check if user is one of the 3 designated Full Access administrators
+    function isFullAccessAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email.lower() == 'careelevator90@gmail.com' ||
+        request.auth.token.email.lower() == 'elevcen@hotmail.com' ||
+        request.auth.token.email.lower() == 'ji.tft90@gmail.com'
+      );
+    }
+
+    // Expenses collection: All authenticated users can read (Read Only for others), only Full Access admins can write/edit/delete
+    match /expenses/{expenseId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isFullAccessAdmin();
+    }
+
+    // Incomes collection: All authenticated users can read (Read Only for others), only Full Access admins can write/edit/delete
+    match /incomes/{incomeId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isFullAccessAdmin();
+    }
+
+    // User Roles collection: Authenticated users can read, authenticated users can write role entries
+    match /userRoles/{email} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Settings (e.g. owners list): Authenticated users can read, only Full Access admins can write/edit/delete
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isFullAccessAdmin();
+    }
+  }
+}
+
