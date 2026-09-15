@@ -141,6 +141,7 @@ export default function SettingsTab({
   const [appsScriptInput, setAppsScriptInput] = useState(scriptUrl);
 
   // Android Studio Kotlin Project Generator States
+  const [androidAppMode, setAndroidAppMode] = useState<'embedded' | 'hosted'>('embedded');
   const [androidAppName, setAndroidAppName] = useState('CEC Accounts');
   const [androidPackageName, setAndroidPackageName] = useState('com.cecaccounts.app');
   const [androidGoogleServicesJson, setAndroidGoogleServicesJson] = useState(DEFAULT_GOOGLE_SERVICES_JSON);
@@ -155,8 +156,10 @@ export default function SettingsTab({
     e.preventDefault();
     setIsGeneratingZip(true);
     try {
-      const targetUrl = androidTargetUrl.trim() || (typeof window !== 'undefined' ? window.location.origin : '');
-      if (!targetUrl.startsWith('http')) {
+      const isEmbedded = androidAppMode === 'embedded';
+      const targetUrl = isEmbedded ? '' : (androidTargetUrl.trim() || (typeof window !== 'undefined' ? window.location.origin : ''));
+      
+      if (!isEmbedded && !targetUrl.startsWith('http')) {
         addToast('Please enter a valid Web App URL (starting with http:// or https://)', 'error');
         setIsGeneratingZip(false);
         return;
@@ -171,7 +174,8 @@ export default function SettingsTab({
         webAppUrl: targetUrl,
         versionCode: 1,
         versionName: '1.0.0',
-        googleServicesJson: androidGoogleServicesJson
+        googleServicesJson: androidGoogleServicesJson,
+        isEmbeddedApp: isEmbedded
       });
 
       const url = URL.createObjectURL(zipBlob);
@@ -184,7 +188,12 @@ export default function SettingsTab({
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
 
-      addToast('Android Studio Kotlin project ZIP generated & downloaded!', 'success');
+      addToast(
+        isEmbedded 
+          ? 'Standalone APK Project (No Google AI Studio login needed!) generated & downloaded!' 
+          : 'Android Studio Kotlin project ZIP generated & downloaded!', 
+        'success'
+      );
     } catch (err: any) {
       console.error('Failed to generate Android ZIP:', err);
       addToast('Failed to create Android project: ' + (err.message || 'Unknown error'), 'error');
@@ -993,7 +1002,49 @@ export default function SettingsTab({
 
           {/* Android Project Options Form */}
           <form onSubmit={handleDownloadAndroidZip} className="space-y-4 mb-6">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* APK Packaging Mode Selector */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-2">
+              <button
+                type="button"
+                onClick={() => setAndroidAppMode('embedded')}
+                className={`p-4 rounded-2xl border text-left transition ${
+                  androidAppMode === 'embedded'
+                    ? 'border-emerald-500 bg-emerald-50/70 ring-2 ring-emerald-500/20 shadow-sm'
+                    : 'border-slate-200 bg-white hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-bold text-xs text-slate-900 mb-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-sm"></span>
+                  <span>🚀 Standalone Native Bundle (Recommended)</span>
+                  <span className="ml-auto px-1.5 py-0.5 rounded text-[9px] font-extrabold bg-emerald-100 text-emerald-800 uppercase">
+                    No Google Login
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  Web app-টি সরাসরি APK-র ভেতরে এম্বেড থাকবে। কোনো Google AI Studio লোগো বা গুগল লগইন চাইবে না। মোবাইল খুললেই মুহূর্তের মধ্যে অ্যাপ চালু হবে এবং ফায়ারবেসের সাথে রিয়েল-টাইমে ডেটা সিঙ্ক হবে।
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAndroidAppMode('hosted')}
+                className={`p-4 rounded-2xl border text-left transition ${
+                  androidAppMode === 'hosted'
+                    ? 'border-blue-500 bg-blue-50/70 ring-2 ring-blue-500/20 shadow-sm'
+                    : 'border-slate-200 bg-white hover:bg-slate-50'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-bold text-xs text-slate-900 mb-1">
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shadow-sm"></span>
+                  <span>🌐 Hosted Cloud Web URL</span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  লাইভ পাবলিক সার্ভার থেকে লোড করবে (যেমন Firebase Hosting বা Cloud Run Deployed URL)। <i>(নোট: ais-dev-... লিঙ্ক ব্যবহার করলে মোবাইলে গুগল লগইন চাইবে)</i>.
+                </p>
+              </button>
+            </div>
+
+            <div className={`grid grid-cols-1 ${androidAppMode === 'hosted' ? 'md:grid-cols-3' : 'md:grid-cols-2'} gap-4`}>
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
                   App Name
@@ -1022,29 +1073,47 @@ export default function SettingsTab({
                 />
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">
-                    Target Cloud Web App URL
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setAndroidTargetUrl(typeof window !== 'undefined' ? window.location.origin : '')}
-                    className="text-[10px] font-bold text-blue-600 hover:underline"
-                  >
-                    Current URL
-                  </button>
+              {androidAppMode === 'hosted' && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">
+                      Target Cloud Web App URL
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setAndroidTargetUrl(typeof window !== 'undefined' ? window.location.origin : '')}
+                      className="text-[10px] font-bold text-blue-600 hover:underline"
+                    >
+                      Current URL
+                    </button>
+                  </div>
+                  <input
+                    type="url"
+                    required
+                    value={androidTargetUrl}
+                    onChange={(e) => setAndroidTargetUrl(e.target.value)}
+                    placeholder="https://care-elevator-accounts.web.app"
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 outline-none transition text-xs font-mono"
+                  />
                 </div>
-                <input
-                  type="url"
-                  required
-                  value={androidTargetUrl}
-                  onChange={(e) => setAndroidTargetUrl(e.target.value)}
-                  placeholder="https://..."
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:border-blue-500 outline-none transition text-xs font-mono"
-                />
-              </div>
+              )}
             </div>
+
+            {/* Warning if using internal development URL in hosted mode */}
+            {androidAppMode === 'hosted' && androidTargetUrl.includes('ais-dev-') && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-800">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-1 text-[11px] leading-relaxed">
+                  <span className="font-bold block">⚠️ AI Studio প্রাইভেট ডেভেলপমেন্ট লিঙ্ক সনাক্ত হয়েছে:</span>
+                  <p>
+                    আপনি যে URL-টি দিয়েছেন (<code className="font-mono bg-amber-100/80 px-1 py-0.5 rounded">{androidTargetUrl}</code>) সেটি Google AI Studio-র প্রাইভেট ডেভেলপমেন্ট প্রিভিউ। এটি মোবাইল ডিভাইসে গুগল একাউন্ট যাচাই করতে বলে।
+                  </p>
+                  <p className="font-semibold text-amber-900">
+                    💡 সমাধান: উপরের <b>"🚀 Standalone Native Bundle"</b> অপশনটি বেছে নিন, অথবা উপরে AI Studio-র <b>Deploy</b> বাটনে ক্লিক করে পাওয়া পাবলিক লিংকটি এখানে দিন।
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* Firebase Google Services Integration Card */}
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl">
@@ -1117,17 +1186,25 @@ export default function SettingsTab({
               <button
                 type="submit"
                 disabled={isGeneratingZip}
-                className="w-full sm:w-auto px-8 py-3.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition shadow-md shadow-blue-600/20 text-xs uppercase tracking-wider flex items-center justify-center gap-2.5 disabled:opacity-50"
+                className={`w-full sm:w-auto px-8 py-3.5 ${
+                  androidAppMode === 'embedded' 
+                    ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/20' 
+                    : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/20'
+                } text-white font-bold rounded-xl transition shadow-md text-xs uppercase tracking-wider flex items-center justify-center gap-2.5 disabled:opacity-50`}
               >
                 {isGeneratingZip ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Packaging Kotlin Project...</span>
+                    <span>Packaging {androidAppMode === 'embedded' ? 'Standalone' : 'Hosted'} Kotlin Project...</span>
                   </>
                 ) : (
                   <>
                     <Download className="w-4 h-4" />
-                    <span>Download Kotlin Code Project (.ZIP for Android Studio)</span>
+                    <span>
+                      {androidAppMode === 'embedded' 
+                        ? 'Download Standalone APK Project (ZIP - No Google Login Needed)' 
+                        : 'Download Kotlin Code Project (.ZIP for Android Studio)'}
+                    </span>
                   </>
                 )}
               </button>

@@ -7,6 +7,7 @@ export interface AndroidProjectConfig {
   versionCode: number;
   versionName: string;
   googleServicesJson?: string;
+  isEmbeddedApp?: boolean;
 }
 
 export const DEFAULT_GOOGLE_SERVICES_JSON = JSON.stringify({
@@ -48,7 +49,8 @@ export async function generateAndroidStudioProjectZip(config: AndroidProjectConf
     webAppUrl,
     versionCode = 1,
     versionName = '1.0.0',
-    googleServicesJson = DEFAULT_GOOGLE_SERVICES_JSON
+    googleServicesJson = DEFAULT_GOOGLE_SERVICES_JSON,
+    isEmbeddedApp = true
   } = config;
 
   const packagePath = packageName.replace(/\./g, '/');
@@ -58,8 +60,6 @@ export async function generateAndroidStudioProjectZip(config: AndroidProjectConf
 plugins {
     id("com.android.application") version "8.2.2" apply false
     id("org.jetbrains.kotlin.android") version "1.9.22" apply false
-    // Google services Gradle plugin
-    id("com.google.gms.google-services") version "4.4.2" apply false
 }
 `;
 
@@ -85,7 +85,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "${appName.replace(/[^a-zA-Z0-9_-]/g, '')}"
+rootProject.name = "${appName.replace(/[^a-zA-Z0-9_-]/g, '') || 'CECAccounts'}"
 include(":app")
 `;
 
@@ -108,8 +108,6 @@ zipStorePath=wrapper/dists
   const appBuildGradle = `plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    // Google services Gradle plugin
-    id("com.google.gms.google-services")
 }
 
 android {
@@ -118,18 +116,20 @@ android {
 
     defaultConfig {
         applicationId = "${packageName}"
-        minSdk = 24
+        minSdk = 26
         targetSdk = 34
         versionCode = ${versionCode}
         versionName = "${versionName}"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
         }
     }
 
     buildTypes {
+        debug {
+            isDebuggable = true
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -139,25 +139,20 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "1.8"
-    }
-    buildFeatures {
-        viewBinding = true
+        jvmTarget = "17"
     }
 }
 
 dependencies {
-    // Import the Firebase BoM
-    implementation(platform("com.google.firebase:firebase-bom:34.19.0"))
-    implementation("com.google.firebase:firebase-analytics")
-
     // AndroidX & Material UI
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("androidx.activity:activity-ktx:1.8.2")
+    implementation("androidx.coordinatorlayout:coordinatorlayout:1.2.0")
     implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     implementation("androidx.webkit:webkit:1.10.0")
@@ -223,6 +218,7 @@ dependencies {
   const mainActivityKt = `package ${packageName}
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
@@ -236,6 +232,7 @@ import android.os.Environment
 import android.util.Base64
 import android.view.View
 import android.webkit.*
+import android.webkit.WebChromeClient.FileChooserParams
 import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -244,6 +241,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import androidx.webkit.WebViewAssetLoader
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -261,7 +259,10 @@ class MainActivity : AppCompatActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var backPressedTime: Long = 0
 
-    // Target URL of the Care Elevator cloud app
+    // Whether this APK is running with bundled standalone web assets (No Google AI Studio login needed!)
+    private val isEmbeddedApp = ${isEmbeddedApp ? "true" : "false"}
+
+    // Target URL of the cloud web app (used if isEmbeddedApp is false)
     private val webAppUrl = "${webAppUrl}"
 
     // File picker launcher for file upload / camera capture
@@ -269,13 +270,21 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (filePathCallback != null) {
-            val results: Array<Uri>? = if (result.resultCode == RESULT_OK) {
-                val dataString = result.data?.dataString
-                val clipData = result.data?.clipData
-                when {
-                    dataString != null -> arrayOf(Uri.parse(dataString))
-                    clipData != null -> Array(clipData.itemCount) { i -> clipData.getItemAt(i).uri }
-                    else -> null
+            val results: Array<Uri>? = if (result.resultCode == Activity.RESULT_OK) {
+                val data = result.data
+                val dataString = data?.dataString
+                val clipData = data?.clipData
+                if (clipData != null && clipData.itemCount > 0) {
+                    val list = mutableListOf<Uri>()
+                    for (i in 0 until clipData.itemCount) {
+                        val uri = clipData.getItemAt(i).uri
+                        if (uri != null) list.add(uri)
+                    }
+                    if (list.isNotEmpty()) list.toTypedArray() else null
+                } else if (dataString != null) {
+                    arrayOf(Uri.parse(dataString))
+                } else {
+                    null
                 }
             } else {
                 null
@@ -301,7 +310,11 @@ class MainActivity : AppCompatActivity() {
         setupSwipeRefresh()
 
         retryBtn.setOnClickListener {
-            if (isNetworkAvailable()) {
+            if (isEmbeddedApp) {
+                offlineLayout.visibility = View.GONE
+                webView.visibility = View.VISIBLE
+                webView.loadUrl("https://appassets.androidplatform.net/index.html")
+            } else if (isNetworkAvailable()) {
                 offlineLayout.visibility = View.GONE
                 webView.visibility = View.VISIBLE
                 webView.reload()
@@ -310,7 +323,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        if (isNetworkAvailable()) {
+        if (isEmbeddedApp) {
+            webView.loadUrl("https://appassets.androidplatform.net/index.html")
+        } else if (isNetworkAvailable()) {
             webView.loadUrl(webAppUrl)
         } else {
             showOfflineView()
@@ -343,17 +358,82 @@ class MainActivity : AppCompatActivity() {
         settings.cacheMode = WebSettings.LOAD_DEFAULT
         settings.allowFileAccess = true
         settings.allowContentAccess = true
+        settings.allowFileAccessFromFileURLs = true
+        settings.allowUniversalAccessFromFileURLs = true
+        settings.javaScriptCanOpenWindowsAutomatically = true
         settings.mediaPlaybackRequiresUserGesture = false
         settings.setSupportMultipleWindows(false)
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         settings.userAgentString = settings.userAgentString + " CECAccountsMobileApp/1.0"
+        webView.setBackgroundColor(android.graphics.Color.parseColor("#0f172a"))
 
         // Handle downloads (like CSV exports & report files)
         webView.setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
             handleDownload(url, contentDisposition, mimetype)
         }
 
+        // Setup WebViewAssetLoader for clean, instant, secure local asset loading without CORS hurdles
+        val assetLoader = WebViewAssetLoader.Builder()
+            .setDomain("appassets.androidplatform.net")
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
+
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): WebResourceResponse? {
+                if (request != null) {
+                    val url = request.url
+
+                    // Fast, reliable direct local asset loading for standalone embedded app
+                    if (url.host == "appassets.androidplatform.net") {
+                        val path = (url.path ?: "").removePrefix("/")
+                        val cleanPath = if (path.isEmpty() || path == "/") "index.html" else path
+                        val fileName = cleanPath.substringAfterLast("/")
+
+                        val candidates = listOf(
+                            cleanPath,
+                            if (cleanPath.startsWith("assets/")) cleanPath.removePrefix("assets/") else "assets/$cleanPath",
+                            fileName,
+                            "assets/$fileName"
+                        ).distinct()
+
+                        for (cand in candidates) {
+                            try {
+                                val stream = assets.open(cand)
+                                val mime = when {
+                                    cand.endsWith(".html") -> "text/html"
+                                    cand.endsWith(".js") || cand.endsWith(".mjs") -> "application/javascript"
+                                    cand.endsWith(".css") -> "text/css"
+                                    cand.endsWith(".svg") -> "image/svg+xml"
+                                    cand.endsWith(".json") -> "application/json"
+                                    cand.endsWith(".png") -> "image/png"
+                                    cand.endsWith(".jpg") || cand.endsWith(".jpeg") -> "image/jpeg"
+                                    cand.endsWith(".ico") -> "image/x-icon"
+                                    cand.endsWith(".woff2") -> "font/woff2"
+                                    cand.endsWith(".woff") -> "font/woff"
+                                    cand.endsWith(".ttf") -> "font/ttf"
+                                    else -> "application/octet-stream"
+                                }
+                                val headers = mapOf(
+                                    "Access-Control-Allow-Origin" to "*",
+                                    "Access-Control-Allow-Methods" to "GET, POST, OPTIONS",
+                                    "Access-Control-Allow-Headers" to "*",
+                                    "Cache-Control" to "no-cache"
+                                )
+                                return WebResourceResponse(mime, "UTF-8", 200, "OK", headers, stream)
+                            } catch (_: Exception) {}
+                        }
+                    }
+
+                    val assetResponse = assetLoader.shouldInterceptRequest(url)
+                    if (assetResponse != null) return assetResponse
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 progressBar.visibility = View.VISIBLE
             }
@@ -370,7 +450,7 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest?,
                 error: WebResourceError?
             ) {
-                if (request?.isForMainFrame == true && !isNetworkAvailable()) {
+                if (!isEmbeddedApp && request?.isForMainFrame == true && !isNetworkAvailable()) {
                     showOfflineView()
                 }
             }
@@ -380,6 +460,10 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest?
             ): Boolean {
                 val url = request?.url?.toString() ?: return false
+                if (url.startsWith("https://appassets.androidplatform.net") ||
+                    (!isEmbeddedApp && webAppUrl.isNotEmpty() && url.startsWith(webAppUrl))) {
+                    return false
+                }
                 // Keep app navigation inside WebView, open external dialer/whatsapp/mailto externally
                 return when {
                     url.startsWith("tel:") || url.startsWith("mailto:") || url.startsWith("whatsapp:") -> {
@@ -397,6 +481,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                val msg = consoleMessage?.message() ?: ""
+                val line = consoleMessage?.lineNumber() ?: 0
+                val src = consoleMessage?.sourceId() ?: ""
+                android.util.Log.d("CEC_APP", "[$line:$src] $msg")
+                return true
+            }
+
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 progressBar.progress = newProgress
                 if (newProgress == 100) {
@@ -407,7 +499,7 @@ class MainActivity : AppCompatActivity() {
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,
-                fileChooserParams: FileChooserParams?
+                fileChooserParams: WebChromeClient.FileChooserParams?
             ): Boolean {
                 this@MainActivity.filePathCallback?.onReceiveValue(null)
                 this@MainActivity.filePathCallback = filePathCallback
@@ -519,8 +611,7 @@ class MainActivity : AppCompatActivity() {
         android:progress="0"
         android:progressBackgroundTint="#334155"
         android:progressTint="#10b981"
-        android:visibility="gone"
-        app:layout_behavior="@string/appbar_scrolling_view_behavior" />
+        android:visibility="gone" />
 
     <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
         android:id="@+id/swipeRefresh"
@@ -586,9 +677,16 @@ class MainActivity : AppCompatActivity() {
 `;
 
   // 10. app/src/main/res/values/strings.xml
+  const escapedAppName = (appName || 'CEC Accounts')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '\\\'');
+
   const stringsXml = `<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">${appName}</string>
+    <string name="app_name">${escapedAppName}</string>
 </resources>
 `;
 
@@ -617,7 +715,54 @@ class MainActivity : AppCompatActivity() {
 </resources>
 `;
 
-  // 13. app/src/main/res/xml/network_security_config.xml
+  // 13. Launcher Icon Drawables & Adaptive Icons (Fixes AAPT2 processDebugResources missing icon error)
+  const icLauncherBackgroundXml = `<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#0f172a"
+        android:pathData="M0,0h108v108h-108z" />
+</vector>
+`;
+
+  const icLauncherForegroundXml = `<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.65"
+        android:scaleY="0.65"
+        android:translateX="18.9"
+        android:translateY="18.9">
+        <!-- Emerald rounded container -->
+        <path
+            android:fillColor="#10b981"
+            android:pathData="M16,4h76c6.6,0 12,5.4 12,12v76c0,6.6 -5.4,12 -12,12H16c-6.6,0 -12,-5.4 -12,-12V16c0,-6.6 5.4,-12 12,-12z" />
+        <!-- Slate elevator frame -->
+        <path
+            android:fillColor="#0f172a"
+            android:pathData="M22,16h28v76H22V16z M58,16h28v76H58V16z" />
+        <!-- White navigation arrows -->
+        <path
+            android:fillColor="#ffffff"
+            android:pathData="M36,36l-8,11h16L36,36z M72,72l8,-11H64L72,72z" />
+    </group>
+</vector>
+`;
+
+  const icLauncherAdaptiveXml = `<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+`;
+
+  // 14. app/src/main/res/xml/network_security_config.xml
   const networkSecurityXml = `<?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <base-config cleartextTrafficPermitted="true">
@@ -629,7 +774,7 @@ class MainActivity : AppCompatActivity() {
 </network-security-config>
 `;
 
-  // 14. app/src/main/res/xml/file_paths.xml
+  // 15. app/src/main/res/xml/file_paths.xml
   const filePathsXml = `<?xml version="1.0" encoding="utf-8"?>
 <paths>
     <external-path name="external_files" path="." />
@@ -639,7 +784,7 @@ class MainActivity : AppCompatActivity() {
 </paths>
 `;
 
-  // 15. README.md
+  // 16. README.md
   const readmeMd = `# ${appName} - Android Studio Kotlin Project
 
 This is a complete, production-ready Android Studio Kotlin project for **${appName}**.
@@ -655,28 +800,38 @@ This is a complete, production-ready Android Studio Kotlin project for **${appNa
 
 ---
 
-## How to Build the APK in Android Studio (4 Easy Steps):
+## How to Build the APK in Android Studio:
 
 ### Step 1: Extract the ZIP
 Unzip this \`${appName.replace(/\s+/g, '')}-AndroidStudio-Kotlin.zip\` file on your computer.
 
 ### Step 2: Open in Android Studio
-1. Launch **Android Studio**.
+1. Launch **Android Studio**. Make sure your PC is connected to the internet.
 2. Click **Open** (or **File > Open**).
 3. Select the extracted folder containing \`build.gradle.kts\` and click **OK**.
-4. Android Studio will automatically download the Gradle wrapper and sync the project dependencies.
+4. Android Studio will automatically download the Gradle wrapper and sync the dependencies.
+   *(Note: If you see a Gradle Sync notice, click "Sync Project with Gradle Files" at top-right).*
 
 ### Step 3: Build the APK
 1. In the top menu bar, click:
    **Build > Build Bundle(s) / APK(s) > Build APK(s)**
-2. Wait a few seconds for Gradle to compile.
-3. A notification will appear at the bottom right saying:
+2. Wait a few moments for Gradle to compile.
+3. A notification will pop up at the bottom right saying:
    *"APK(s) generated successfully for 1 module"*.
 4. Click **locate** in that notification. The generated APK file is located in:
    \`app/build/outputs/apk/debug/app-debug.apk\`
 
 ### Step 4: Install on Mobile
 Transfer \`app-debug.apk\` to your Android phone (via WhatsApp, Google Drive, USB, or email) and tap on it to install. You can now use the exact same app on both computer and mobile with real-time sync!
+
+---
+
+### Troubleshooting Common Android Studio Issues:
+- **"Unknown host / No such host is known"**:
+  Ensure your computer is connected to the internet during the very first Gradle sync so Android Studio can download the Gradle tooling from Google's repository. Also ensure your firewall or antivirus is not blocking Android Studio.
+- **"Offline Mode"**:
+  If Gradle offline mode was previously enabled in your Android Studio, disable it via:
+  **Settings / Preferences > Build, Execution, Deployment > Build Tools > Gradle** and uncheck "Offline work", then click Sync.
 `;
 
   // Add files to zip
@@ -700,6 +855,121 @@ Transfer \`app-debug.apk\` to your Android phone (via WhatsApp, Google Drive, US
   zip.file('app/src/main/res/values/themes.xml', themesXml);
   zip.file('app/src/main/res/xml/network_security_config.xml', networkSecurityXml);
   zip.file('app/src/main/res/xml/file_paths.xml', filePathsXml);
+
+  // App Launcher Icons: Vectors in drawable, Adaptive Icons in mipmap-anydpi-v26 (standard Android pattern)
+  zip.file('app/src/main/res/drawable/ic_launcher_background.xml', icLauncherBackgroundXml);
+  zip.file('app/src/main/res/drawable/ic_launcher_foreground.xml', icLauncherForegroundXml);
+
+  zip.file('app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml', icLauncherAdaptiveXml);
+  zip.file('app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml', icLauncherAdaptiveXml);
+
+  // 13. Standalone Embedded Assets Bundle (Ensures the APK runs locally without white screens or login prompts)
+  if (isEmbeddedApp) {
+    try {
+      let indexHtml = '';
+      let assetList: string[] = [];
+
+      // 1. Try to get production manifest from server endpoint
+      try {
+        const manifestRes = await fetch('/api/embedded-assets-info');
+        if (manifestRes.ok) {
+          const data = await manifestRes.json();
+          if (data.indexHtml && !data.indexHtml.includes('/src/main.tsx')) {
+            indexHtml = data.indexHtml;
+            assetList = Array.isArray(data.assets) ? data.assets : [];
+          }
+        }
+      } catch (_) {}
+
+      // 2. Fallback to direct fetch of production index.html
+      if (!indexHtml) {
+        const candidates = ['/dist/index.html', '/embedded-index.html'];
+        for (const candidate of candidates) {
+          try {
+            const res = await fetch(candidate);
+            if (res.ok) {
+              const text = await res.text();
+              if (text && !text.includes('/src/main.tsx')) {
+                indexHtml = text;
+                break;
+              }
+            }
+          } catch (_) {}
+        }
+      }
+
+      if (indexHtml) {
+        // Remove crossorigin attributes to avoid Android WebView CORS blocks on local assets
+        const cleanIndexHtml = indexHtml
+          .replace(/\s+crossorigin(="[^"]*")?/gi, '');
+
+        zip.file('app/src/main/assets/index.html', cleanIndexHtml);
+        zip.file('app/src/main/assets/assets/index.html', cleanIndexHtml);
+
+        // Collect all assets (scripts and stylesheets)
+        const discoveredAssets = new Set<string>(assetList);
+
+        const scriptMatches = [...cleanIndexHtml.matchAll(/src="([^"]+)"/g)];
+        for (const m of scriptMatches) {
+          discoveredAssets.add(m[1]);
+        }
+
+        const linkMatches = [...cleanIndexHtml.matchAll(/href="([^"]+)"/g)];
+        for (const m of linkMatches) {
+          discoveredAssets.add(m[1]);
+        }
+
+        for (const assetPath of discoveredAssets) {
+          if (!assetPath || assetPath.startsWith('http') || assetPath.startsWith('//') || assetPath.includes('icon.svg') || assetPath.includes('manifest.json')) {
+            continue;
+          }
+          const cleanPath = assetPath.replace(/^\/+/, '');
+          const fileNameOnly = cleanPath.split('/').pop() || cleanPath;
+
+          const fetchCandidates = [
+            assetPath.startsWith('/') ? assetPath : '/' + assetPath,
+            '/dist/' + cleanPath,
+            '/assets/' + fileNameOnly
+          ];
+
+          for (const fetchUrl of fetchCandidates) {
+            try {
+              const res = await fetch(fetchUrl);
+              if (res.ok) {
+                const blob = await res.blob();
+                // Store in all standard Android asset location formats for 100% path resolution
+                zip.file(`app/src/main/assets/${cleanPath}`, blob);
+                zip.file(`app/src/main/assets/${fileNameOnly}`, blob);
+                zip.file(`app/src/main/assets/assets/${fileNameOnly}`, blob);
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+
+        // Fetch icon.svg and manifest.json
+        try {
+          const iconRes = await fetch('/icon.svg');
+          if (iconRes.ok) {
+            const iconBlob = await iconRes.blob();
+            zip.file('app/src/main/assets/icon.svg', iconBlob);
+            zip.file('app/src/main/assets/assets/icon.svg', iconBlob);
+          }
+        } catch (_) {}
+
+        try {
+          const manifestRes = await fetch('/manifest.json');
+          if (manifestRes.ok) {
+            const manifestBlob = await manifestRes.blob();
+            zip.file('app/src/main/assets/manifest.json', manifestBlob);
+            zip.file('app/src/main/assets/assets/manifest.json', manifestBlob);
+          }
+        } catch (_) {}
+      }
+    } catch (err) {
+      console.warn('Failed to embed web assets:', err);
+    }
+  }
 
   return await zip.generateAsync({ type: 'blob' });
 }

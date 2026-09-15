@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
+    "build": "vite build && mkdir -p public/dist public/assets && cp dist/index.html public/dist/index.html && cp dist/index.html public/embedded-index.html && cp -r dist/assets/* public/assets/ 2>/dev/null || true",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { ShieldCheck, Eye, EyeOff, Lock, Mail, ArrowRight, AlertCircle, Sparkles, UserPlus, LogIn } from 'lucide-react';
+import { ShieldCheck, Eye, EyeOff, Lock, Mail, ArrowRight, AlertCircle, Sparkles, LogIn } from 'lucide-react';
 import { auth, db, hasValidFirebaseConfig } from '../lib/firebase';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -12,10 +12,8 @@ interface LoginProps {
 }
 
 export default function Login({ onSuccess, addToast }: LoginProps) {
-  const [isRegistering, setIsRegistering] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorShake, setErrorShake] = useState(false);
@@ -36,47 +34,11 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
       return;
     }
 
-    if (isRegistering && password !== confirmPassword) {
-      addToast('Passwords do not match.', 'error');
-      return;
-    }
-
     setLoading(true);
 
     try {
       if (isFirebaseConfigured && auth) {
-        if (isRegistering) {
-          // Registration flow
-          const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
-          const loggedInEmail = userCredential.user?.email || email.trim();
-          const cleanEmail = loggedInEmail.toLowerCase();
-          
-          // Strictly allow Full Access ONLY to the 3 designated administrator emails
-          const role: 'Read Only' | 'Full Access' = isFullAccessEmail(cleanEmail) ? 'Full Access' : 'Read Only';
-
-          if (db) {
-            try {
-              await setDoc(doc(db, 'userRoles', cleanEmail), {
-                email: cleanEmail,
-                role,
-                createdAt: new Date().toISOString()
-              });
-            } catch (dbErr) {
-              console.warn("Could not write initial role to Firestore:", dbErr);
-            }
-          }
-
-          sessionStorage.setItem('isLoggedIn', 'true');
-          sessionStorage.setItem('loggedInUserEmail', cleanEmail);
-          sessionStorage.setItem('loggedInUserRole', role);
-          sessionStorage.removeItem('isFallbackLogin');
-
-          addToast(`Account created successfully with ${role} access!`, 'success');
-          onSuccess(cleanEmail, role);
-          return;
-        }
-
-        // Sign In Flow
+        // Sign In Flow (Strictly Login Only - Account Creation restricted to Settings)
         try {
           const userCredential = await signInWithEmailAndPassword(auth, email.trim(), password);
           const loggedInEmail = userCredential.user?.email || email;
@@ -101,6 +63,10 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
           sessionStorage.setItem('loggedInUserEmail', loggedInEmail);
           sessionStorage.setItem('loggedInUserRole', role);
           sessionStorage.removeItem('isFallbackLogin');
+          localStorage.setItem('isLoggedIn', 'true');
+          localStorage.setItem('loggedInUserEmail', loggedInEmail);
+          localStorage.setItem('loggedInUserRole', role);
+          localStorage.removeItem('isFallbackLogin');
           
           addToast(`Login successful (${role})`, 'success');
           onSuccess(loggedInEmail, role);
@@ -110,7 +76,7 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
           const cleanEmail = email.trim().toLowerCase();
           const isEligibleAdmin = isFullAccessEmail(cleanEmail);
 
-          // If the account does not exist in the new Firebase project, attempt auto-creation for designated admin
+          // If designated administrator account does not exist in a new Firebase project yet, auto-bootstrap it
           if (isEligibleAdmin && (signInErr?.code === 'auth/invalid-credential' || signInErr?.code === 'auth/user-not-found')) {
             try {
               const newCred = await createUserWithEmailAndPassword(auth, email.trim(), password);
@@ -128,6 +94,10 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
               sessionStorage.setItem('loggedInUserEmail', registeredEmail);
               sessionStorage.setItem('loggedInUserRole', 'Full Access');
               sessionStorage.removeItem('isFallbackLogin');
+              localStorage.setItem('isLoggedIn', 'true');
+              localStorage.setItem('loggedInUserEmail', registeredEmail);
+              localStorage.setItem('loggedInUserRole', 'Full Access');
+              localStorage.removeItem('isFallbackLogin');
 
               addToast('Administrator account created and signed in successfully!', 'success');
               onSuccess(registeredEmail, 'Full Access');
@@ -149,6 +119,10 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
             sessionStorage.setItem('isFallbackLogin', 'true');
             sessionStorage.setItem('loggedInUserEmail', cleanEmail);
             sessionStorage.setItem('loggedInUserRole', role);
+            localStorage.setItem('isLoggedIn', 'true');
+            localStorage.setItem('isFallbackLogin', 'true');
+            localStorage.setItem('loggedInUserEmail', cleanEmail);
+            localStorage.setItem('loggedInUserRole', role);
             addToast('Emergency developer access granted (Fallback).', 'info');
             onSuccess(cleanEmail, role);
             return;
@@ -159,7 +133,7 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
           }
 
           if (signInErr?.code === 'auth/invalid-credential' || signInErr?.code === 'auth/user-not-found') {
-            throw new Error('Invalid email or password. To create a new account, please switch to the "Create Account" tab.');
+            throw new Error('Invalid email or password. New accounts must be created by an Administrator in the Settings panel.');
           }
 
           throw signInErr;
@@ -173,6 +147,10 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
           sessionStorage.setItem('isFallbackLogin', 'true');
           sessionStorage.setItem('loggedInUserEmail', loggedInEmail);
           sessionStorage.setItem('loggedInUserRole', role);
+          localStorage.setItem('isLoggedIn', 'true');
+          localStorage.setItem('isFallbackLogin', 'true');
+          localStorage.setItem('loggedInUserEmail', loggedInEmail);
+          localStorage.setItem('loggedInUserRole', role);
           
           addToast('Authorized developer entry granted (Fallback)', 'success');
           onSuccess(loggedInEmail, role);
@@ -216,41 +194,9 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
               {isFirebaseConfigured ? 'FIREBASE AUTHENTICATION' : 'SYSTEM ACCESS CONTROL'}
             </p>
             <p className="text-slate-400 text-xs mt-1.5">
-              {isRegistering 
-                ? 'Create a new user or administrator account in Firebase' 
-                : 'Sign in with your registered account credentials'}
+              Sign in with your authorized email and password credentials
             </p>
           </div>
-
-          {/* Mode Switch Tabs */}
-          {isFirebaseConfigured && (
-            <div className="flex bg-slate-950 p-1 rounded-2xl border border-slate-800 mb-5">
-              <button
-                type="button"
-                onClick={() => setIsRegistering(false)}
-                className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                  !isRegistering 
-                    ? 'bg-blue-600 text-white shadow-md' 
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <LogIn className="w-3.5 h-3.5" />
-                <span>Sign In</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsRegistering(true)}
-                className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                  isRegistering 
-                    ? 'bg-blue-600 text-white shadow-md' 
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <UserPlus className="w-3.5 h-3.5" />
-                <span>Create Account</span>
-              </button>
-            </div>
-          )}
 
           {!isFirebaseConfigured && (
             <div className="mb-6 p-4 bg-amber-500/10 border border-amber-500/20 text-amber-300 rounded-2xl flex gap-3 text-xs">
@@ -291,7 +237,7 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
 
             <div>
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
-                {isRegistering ? 'Choose Password (min 6 characters)' : 'Security Password'}
+                Security Password
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
@@ -308,33 +254,12 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-500 hover:text-slate-300 transition"
+                  className="absolute inset-y-0 right-0 pr-4 flex items-center text-slate-500 hover:text-slate-300 transition cursor-pointer"
                 >
                   {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                 </button>
               </div>
             </div>
-
-            {isRegistering && (
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
-                  Confirm Password
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                    <Lock className="w-5 h-5" />
-                  </div>
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="••••••••"
-                    required
-                    className="w-full pl-12 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-2xl text-white placeholder-slate-600 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/10 transition text-sm"
-                  />
-                </div>
-              </div>
-            )}
 
             <button
               type="submit"
@@ -345,19 +270,23 @@ export default function Login({ onSuccess, addToast }: LoginProps) {
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               ) : (
                 <>
-                  <span>{isRegistering ? 'CREATE ACCOUNT & SIGN IN' : 'LOGIN SYSTEM'}</span>
+                  <LogIn className="w-4 h-4" />
+                  <span>SIGN IN TO SYSTEM</span>
                   <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                 </>
               )}
             </button>
           </motion.form>
           
-          <div className="mt-6 text-center flex flex-col gap-1">
-            <span className="text-[11px] text-slate-500">
+          <div className="mt-6 text-center flex flex-col gap-2 pt-4 border-t border-slate-800/80">
+            <span className="text-[11px] text-slate-400">
+              Accounts can only be created by an Administrator in the <strong className="text-slate-300">Settings</strong> panel.
+            </span>
+            <span className="text-[10px] text-slate-500">
               Authorized Personnel Only. Access is monitored and logged.
             </span>
             {isFirebaseConfigured && (
-              <span className="text-[9px] text-indigo-400 flex items-center justify-center gap-1">
+              <span className="text-[9px] text-indigo-400 flex items-center justify-center gap-1 mt-1">
                 <Sparkles className="w-3 h-3" /> Secure Google Firebase Auth Node Connected
               </span>
             )}

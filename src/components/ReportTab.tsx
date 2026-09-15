@@ -22,7 +22,12 @@ import {
   CheckCircle2,
   AlertTriangle,
   Receipt,
-  Tag
+  Tag,
+  Search,
+  X,
+  User,
+  MapPin,
+  ArrowUpDown
 } from 'lucide-react';
 import { Expense, Income, isMissingInvoice } from '../types';
 import { SaudiRiyalIcon } from './SaudiRiyalIcon';
@@ -63,34 +68,118 @@ export default function ReportTab({
   const [activeReport, setActiveReport] = useState<ReportCategory>('Expense_All');
   const [accountFilter, setAccountFilter] = useState<'All' | 'Cash' | 'Bank'>('All');
   const [selectedLift, setSelectedLift] = useState<string>('All');
+  const [liftSearchQuery, setLiftSearchQuery] = useState<string>('');
+  const [searchViewMode, setSearchViewMode] = useState<'ALL' | 'INCOME' | 'EXPENSE'>('ALL');
+  const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
   const [highlightMissingInvoices, setHighlightMissingInvoices] = useState<boolean>(true);
   const [timeMode, setTimeMode] = useState<'monthly' | 'all'>('monthly');
 
-  // Extract list of all unique lifts across incomes & expenses
+  // Extract list of all unique lifts across incomes & expenses with rich summary
   const allLifts = useMemo(() => {
-    const liftMap = new Map<string, { owner: string; location: string }>();
+    const liftMap = new Map<string, { 
+      owner: string; 
+      location: string;
+      incomeCount: number;
+      expenseCount: number;
+      totalIncome: number;
+      totalExpense: number;
+    }>();
+
     incomes.forEach(i => {
       const liftVal = i.liftNo != null ? String(i.liftNo).trim() : '';
       if (liftVal) {
-        if (!liftMap.has(liftVal)) {
-          liftMap.set(liftVal, { owner: i.owner ? String(i.owner) : '', location: i.location ? String(i.location) : '' });
-        }
+        const existing = liftMap.get(liftVal) || { 
+          owner: i.owner ? String(i.owner).trim() : '', 
+          location: i.location ? String(i.location).trim() : '',
+          incomeCount: 0,
+          expenseCount: 0,
+          totalIncome: 0,
+          totalExpense: 0
+        };
+        if (!existing.owner && i.owner) existing.owner = String(i.owner).trim();
+        if (!existing.location && i.location) existing.location = String(i.location).trim();
+        existing.incomeCount += 1;
+        existing.totalIncome += (i.paidAmt || 0);
+        liftMap.set(liftVal, existing);
       }
     });
+
     expenses.forEach(e => {
       const liftVal = e.liftNo != null ? String(e.liftNo).trim() : '';
       if (liftVal && e.subCategory !== 'Car Maintenance') {
-        if (!liftMap.has(liftVal)) {
-          liftMap.set(liftVal, { owner: e.owner ? String(e.owner) : '', location: e.location ? String(e.location) : '' });
-        }
+        const existing = liftMap.get(liftVal) || { 
+          owner: e.owner ? String(e.owner).trim() : '', 
+          location: e.location ? String(e.location).trim() : '',
+          incomeCount: 0,
+          expenseCount: 0,
+          totalIncome: 0,
+          totalExpense: 0
+        };
+        if (!existing.owner && e.owner) existing.owner = String(e.owner).trim();
+        if (!existing.location && e.location) existing.location = String(e.location).trim();
+        existing.expenseCount += 1;
+        existing.totalExpense += (e.amount || 0);
+        liftMap.set(liftVal, existing);
       }
     });
+
     return Array.from(liftMap.entries()).map(([liftNo, info]) => ({
       liftNo,
       owner: info.owner,
-      location: info.location
-    })).sort((a, b) => String(a.liftNo).localeCompare(String(b.liftNo)));
+      location: info.location,
+      incomeCount: info.incomeCount,
+      expenseCount: info.expenseCount,
+      totalIncome: info.totalIncome,
+      totalExpense: info.totalExpense
+    })).sort((a, b) => String(a.liftNo).localeCompare(String(b.liftNo), undefined, { numeric: true }));
   }, [incomes, expenses]);
+
+  // Is specific lift/owner search active?
+  const isLiftSearchActive = Boolean(liftSearchQuery.trim()) || selectedLift !== 'All';
+
+  // Matching lifts for dropdown / auto-complete
+  const matchingLifts = useMemo(() => {
+    const q = liftSearchQuery.trim().toLowerCase();
+    if (!q) return allLifts.slice(0, 10);
+    return allLifts.filter(l => 
+      l.liftNo.toLowerCase().includes(q) ||
+      l.owner.toLowerCase().includes(q) ||
+      l.location.toLowerCase().includes(q)
+    ).slice(0, 15);
+  }, [allLifts, liftSearchQuery]);
+
+  // Information of selected lift
+  const activeLiftInfo = useMemo(() => {
+    if (selectedLift !== 'All') {
+      return allLifts.find(l => l.liftNo.toLowerCase() === selectedLift.toLowerCase());
+    }
+    const q = liftSearchQuery.trim().toLowerCase();
+    if (q) {
+      return allLifts.find(l => l.liftNo.toLowerCase() === q || l.owner.toLowerCase() === q);
+    }
+    return null;
+  }, [allLifts, selectedLift, liftSearchQuery]);
+
+  // Check if an entry matches current lift/owner search
+  const matchesLiftSearch = (item: { liftNo?: string | number; owner?: string; location?: string; description?: string }) => {
+    if (!isLiftSearchActive) return true;
+    if (selectedLift !== 'All') {
+      return String(item.liftNo ?? '').trim().toLowerCase() === selectedLift.trim().toLowerCase();
+    }
+    const q = liftSearchQuery.trim().toLowerCase();
+    if (!q) return true;
+    const liftStr = String(item.liftNo ?? '').trim().toLowerCase();
+    const ownerStr = String(item.owner ?? '').trim().toLowerCase();
+    const locStr = String(item.location ?? '').trim().toLowerCase();
+    const descStr = String(item.description ?? '').trim().toLowerCase();
+    return liftStr.includes(q) || ownerStr.includes(q) || locStr.includes(q) || descStr.includes(q);
+  };
+
+  const clearLiftSearch = () => {
+    setLiftSearchQuery('');
+    setSelectedLift('All');
+    setShowSuggestions(false);
+  };
 
   // Filtered by account
   const filteredExpensesByAccount = useMemo(() => {
@@ -111,8 +200,14 @@ export default function ReportTab({
 
   // Title resolver
   const getReportTitle = (report: ReportCategory) => {
-    if (report === 'Lift_Statement') {
-      return selectedLift === 'All' ? 'All Lifts Financial Statement' : `Lift Financial Statement: ${selectedLift}`;
+    if (isLiftSearchActive || report === 'Lift_Statement') {
+      const target = selectedLift !== 'All' 
+        ? `Lift #${selectedLift}${activeLiftInfo?.owner ? ` (${activeLiftInfo.owner})` : ''}` 
+        : (liftSearchQuery ? `Search: "${liftSearchQuery}"` : 'All Lifts Combined');
+      
+      if (searchViewMode === 'INCOME') return `Lift Income Statement: ${target}`;
+      if (searchViewMode === 'EXPENSE') return `Lift Expense Statement: ${target}`;
+      return `Lift Financial Statement: ${target} (Income & Expenses)`;
     }
     if (report === 'Expense_All') return 'Total Expenses Report (All)';
     if (report === 'Expense_Overview') return 'Expense Overview (by Category)';
@@ -136,40 +231,40 @@ export default function ReportTab({
   const reportData = useMemo(() => {
     const isMonthly = timeMode === 'monthly';
 
-    // 1. LIFT STATEMENT SPECIFIC REPORT
-    if (activeReport === 'Lift_Statement') {
-      const liftExpenses = filteredExpensesByAccount.filter(e => {
+    // 1. SPECIFIC LIFT / OWNER SEARCH OR LIFT STATEMENT SPECIFIC REPORT
+    if (isLiftSearchActive || activeReport === 'Lift_Statement') {
+      const rawLiftExpenses = filteredExpensesByAccount.filter(e => {
         if (isMonthly && (!e.date || !e.date.startsWith(selectedMonth))) return false;
-        if (selectedLift !== 'All') {
-          return String(e.liftNo ?? '').trim().toLowerCase() === String(selectedLift ?? '').trim().toLowerCase();
-        }
-        return !!e.liftNo;
+        return matchesLiftSearch(e);
       });
 
-      const liftIncomes = filteredIncomesByAccount.filter(i => {
+      const rawLiftIncomes = filteredIncomesByAccount.filter(i => {
         if (isMonthly && (!i.date || !i.date.startsWith(selectedMonth))) return false;
-        if (selectedLift !== 'All') {
-          return String(i.liftNo ?? '').trim().toLowerCase() === String(selectedLift ?? '').trim().toLowerCase();
-        }
-        return !!i.liftNo;
+        return matchesLiftSearch(i);
       });
 
-      const totalExpense = liftExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-      const totalBilled = liftIncomes.reduce((sum, i) => sum + (i.totalAmt || 0), 0);
-      const totalDiscount = liftIncomes.reduce((sum, i) => sum + (i.discountAmt || 0), 0);
-      const totalNetBilled = liftIncomes.reduce((sum, i) => sum + (i.netAmt !== undefined ? i.netAmt : ((i.totalAmt || 0) - (i.discountAmt || 0))), 0);
-      const totalPaid = liftIncomes.reduce((sum, i) => sum + (i.paidAmt || 0), 0);
-      const totalDue = liftIncomes.reduce((sum, i) => sum + (i.dueAmt || 0), 0);
+      // Filter based on selected view mode (All, Income only, Expense only)
+      const liftExpenses = searchViewMode === 'INCOME' ? [] : rawLiftExpenses;
+      const liftIncomes = searchViewMode === 'EXPENSE' ? [] : rawLiftIncomes;
+
+      const totalExpense = rawLiftExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+      const totalBilled = rawLiftIncomes.reduce((sum, i) => sum + (i.totalAmt || 0), 0);
+      const totalDiscount = rawLiftIncomes.reduce((sum, i) => sum + (i.discountAmt || 0), 0);
+      const totalNetBilled = rawLiftIncomes.reduce((sum, i) => sum + (i.netAmt !== undefined ? i.netAmt : ((i.totalAmt || 0) - (i.discountAmt || 0))), 0);
+      const totalPaid = rawLiftIncomes.reduce((sum, i) => sum + (i.paidAmt || 0), 0);
+      const totalDue = rawLiftIncomes.reduce((sum, i) => sum + (i.dueAmt || 0), 0);
       const netProfit = totalPaid - totalExpense;
 
       // Count missing invoices
-      const missingExpenseInvoices = liftExpenses.filter(e => isMissingInvoice(e.invoice)).length;
-      const missingIncomeInvoices = liftIncomes.filter(i => isMissingInvoice(i.liftNo)).length;
+      const missingExpenseInvoices = rawLiftExpenses.filter(e => isMissingInvoice(e.invoice)).length;
+      const missingIncomeInvoices = rawLiftIncomes.filter(i => isMissingInvoice(i.liftNo)).length;
 
       return {
         type: 'lift_statement',
         liftExpenses,
         liftIncomes,
+        rawLiftExpenses,
+        rawLiftIncomes,
         totalExpense,
         totalBilled,
         totalDiscount,
@@ -338,7 +433,17 @@ export default function ReportTab({
     }
 
     return { type: 'empty', list: [], grandTotal: 0, missingInvoicesCount: 0 };
-  }, [activeReport, filteredExpensesByAccount, filteredIncomesByAccount, selectedMonth, selectedLift, timeMode]);
+  }, [
+    activeReport, 
+    filteredExpensesByAccount, 
+    filteredIncomesByAccount, 
+    selectedMonth, 
+    selectedLift, 
+    liftSearchQuery, 
+    searchViewMode, 
+    timeMode, 
+    isLiftSearchActive
+  ]);
 
   // Professional Print Handler
   const handlePrint = () => {
@@ -362,27 +467,40 @@ export default function ReportTab({
     // LIFT STATEMENT PRINT FORMAT
     if (reportData.type === 'lift_statement') {
       const data = reportData as any;
+      const targetName = selectedLift !== 'All' 
+        ? `Lift #${selectedLift}${activeLiftInfo?.owner ? ` (${activeLiftInfo.owner})` : ''}` 
+        : (liftSearchQuery ? `Search: "${liftSearchQuery}"` : 'All Lifts Combined');
+
+      const showIncomes = searchViewMode !== 'EXPENSE' && data.rawLiftIncomes && data.rawLiftIncomes.length > 0;
+      const showExpenses = searchViewMode !== 'INCOME' && data.rawLiftExpenses && data.rawLiftExpenses.length > 0;
+
       bodyContent = `
-        <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:16px; margin:20px 0; display:grid; grid-template-columns: repeat(4, 1fr); gap:15px; text-align:center;">
+        <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:16px; margin:20px 0; display:grid; grid-template-columns: repeat(${searchViewMode === 'ALL' ? '4' : '3'}, 1fr); gap:15px; text-align:center;">
           <div style="border-right:1px solid #cbd5e1;">
             <p style="font-size:10px; font-weight:bold; color:#64748b; margin:0 0 4px 0; text-transform:uppercase;">Lift Details</p>
-            <h4 style="font-size:14px; font-weight:900; color:#0f172a; margin:0;">${selectedLift === 'All' ? 'All Lifts' : selectedLift}</h4>
+            <h4 style="font-size:13px; font-weight:900; color:#0f172a; margin:0;">${targetName}</h4>
+            ${activeLiftInfo?.location ? `<p style="font-size:10px; color:#64748b; margin:2px 0 0 0;">📍 ${activeLiftInfo.location}</p>` : ''}
           </div>
+          ${searchViewMode !== 'EXPENSE' ? `
           <div style="border-right:1px solid #cbd5e1;">
             <p style="font-size:10px; font-weight:bold; color:#16a34a; margin:0 0 4px 0; text-transform:uppercase;">Income Collected</p>
             <h4 style="font-size:15px; font-weight:900; color:#16a34a; margin:0;">${printRiyalIcon} ${data.totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</h4>
-          </div>
+            <span style="font-size:9px; color:#b45309;">Due: ${data.totalDue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+          </div>` : ''}
+          ${searchViewMode !== 'INCOME' ? `
           <div style="border-right:1px solid #cbd5e1;">
             <p style="font-size:10px; font-weight:bold; color:#dc2626; margin:0 0 4px 0; text-transform:uppercase;">Total Expenses</p>
             <h4 style="font-size:15px; font-weight:900; color:#dc2626; margin:0;">${printRiyalIcon} ${data.totalExpense.toLocaleString('en-US', { minimumFractionDigits: 2 })}</h4>
-          </div>
+          </div>` : ''}
+          ${searchViewMode === 'ALL' ? `
           <div>
             <p style="font-size:10px; font-weight:bold; color:#2563eb; margin:0 0 4px 0; text-transform:uppercase;">Net Lift Margin</p>
             <h4 style="font-size:15px; font-weight:900; color:${data.netProfit >= 0 ? '#16a34a' : '#dc2626'}; margin:0;">${printRiyalIcon} ${data.netProfit.toLocaleString('en-US', { minimumFractionDigits: 2 })}</h4>
-          </div>
+          </div>` : ''}
         </div>
 
-        <h4 style="font-size:13px; font-weight:bold; text-transform:uppercase; margin:25px 0 10px 0; border-bottom:1.5px solid #0f172a; padding-bottom:5px;">Lift Income Records</h4>
+        ${showIncomes ? `
+        <h4 style="font-size:13px; font-weight:bold; text-transform:uppercase; margin:25px 0 10px 0; border-bottom:1.5px solid #0f172a; padding-bottom:5px;">Lift Income Records (${(data.rawLiftIncomes || []).length})</h4>
         <table>
           <thead>
             <tr>
@@ -397,7 +515,7 @@ export default function ReportTab({
             </tr>
           </thead>
           <tbody>
-            ${data.liftIncomes.map((i: any) => {
+            ${(data.rawLiftIncomes || []).map((i: any) => {
               const missing = isMissingInvoice(i.liftNo);
               const highlightStyle = (highlightMissingInvoices && missing) ? 'background-color:#fffbeb; border-left:3px solid #f59e0b;' : '';
               return `
@@ -415,8 +533,10 @@ export default function ReportTab({
             }).join('')}
           </tbody>
         </table>
+        ` : ''}
 
-        <h4 style="font-size:13px; font-weight:bold; text-transform:uppercase; margin:30px 0 10px 0; border-bottom:1.5px solid #0f172a; padding-bottom:5px;">Lift Expenses Records</h4>
+        ${showExpenses ? `
+        <h4 style="font-size:13px; font-weight:bold; text-transform:uppercase; margin:30px 0 10px 0; border-bottom:1.5px solid #0f172a; padding-bottom:5px;">Lift Expenses Records (${(data.rawLiftExpenses || []).length})</h4>
         <table>
           <thead>
             <tr>
@@ -429,7 +549,7 @@ export default function ReportTab({
             </tr>
           </thead>
           <tbody>
-            ${data.liftExpenses.map((e: any) => {
+            ${(data.rawLiftExpenses || []).map((e: any) => {
               const missing = isMissingInvoice(e.invoice);
               const highlightStyle = (highlightMissingInvoices && missing) ? 'background-color:#fffbeb; border-left:3px solid #f59e0b;' : '';
               return `
@@ -447,6 +567,7 @@ export default function ReportTab({
             }).join('')}
           </tbody>
         </table>
+        ` : ''}
       `;
     } else if (reportData.type === 'expense_overview') {
       const data = reportData as any;
@@ -762,27 +883,109 @@ export default function ReportTab({
             </div>
           </div>
 
-          {/* 2. Specific Lift Number Selector (Requirement 4.1) */}
-          <div className="flex flex-col">
-            <label className="text-[11px] font-bold text-slate-600 uppercase mb-1.5 tracking-wider flex items-center gap-1">
-              <Building className="w-3.5 h-3.5 text-slate-500" />
-              Specific Lift Filter
-            </label>
-            <div className="relative">
-              <select
-                value={selectedLift}
-                onChange={(e) => setSelectedLift(e.target.value)}
-                className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 text-xs outline-none focus:border-slate-800 focus:bg-white transition cursor-pointer appearance-none pr-10"
-              >
-                <option value="All">All Lifts Combined</option>
-                {allLifts.map((lift) => (
-                  <option key={lift.liftNo} value={lift.liftNo}>
-                    {lift.liftNo} {lift.owner ? `(${lift.owner})` : ''}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          {/* 2. Specific Lift & Owner Search Input */}
+          <div className="flex flex-col relative">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                <Search className="w-3.5 h-3.5 text-blue-600" />
+                Lift / Owner Search
+              </label>
+              {isLiftSearchActive && (
+                <button
+                  type="button"
+                  onClick={clearLiftSearch}
+                  className="text-[10px] font-bold text-rose-500 hover:text-rose-700 flex items-center gap-0.5"
+                >
+                  <X className="w-3 h-3" /> Clear
+                </button>
+              )}
             </div>
+            
+            <div className="relative">
+              <input
+                type="text"
+                value={selectedLift !== 'All' ? selectedLift : liftSearchQuery}
+                onFocus={() => setShowSuggestions(true)}
+                onChange={(e) => {
+                  setSelectedLift('All');
+                  setLiftSearchQuery(e.target.value);
+                  setShowSuggestions(true);
+                }}
+                placeholder="Search Lift No or Owner name..."
+                className="w-full pl-9 pr-8 py-3 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 text-xs outline-none focus:border-blue-600 focus:bg-white transition"
+              />
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              {isLiftSearchActive && (
+                <button
+                  type="button"
+                  onClick={clearLiftSearch}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 rounded-full"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Suggestions / Auto-Complete Popover */}
+            {showSuggestions && matchingLifts.length > 0 && (
+              <div 
+                className="absolute z-30 left-0 right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-2xl shadow-xl max-h-64 overflow-y-auto divide-y divide-slate-100"
+                onMouseLeave={() => setShowSuggestions(false)}
+              >
+                <div className="p-2 bg-slate-50 text-[10px] font-bold text-slate-500 uppercase tracking-wider flex items-center justify-between">
+                  <span>Matching Lifts & Owners ({matchingLifts.length})</span>
+                  <button 
+                    type="button" 
+                    onClick={() => setShowSuggestions(false)}
+                    className="text-slate-400 hover:text-slate-600"
+                  >
+                    Close
+                  </button>
+                </div>
+                {matchingLifts.map((lift) => (
+                  <button
+                    key={lift.liftNo}
+                    type="button"
+                    onClick={() => {
+                      setSelectedLift(lift.liftNo);
+                      setLiftSearchQuery(lift.liftNo);
+                      setShowSuggestions(false);
+                      // Auto switch to lift statement view if not already in it
+                      if (!activeReport.startsWith('Expense') && !activeReport.startsWith('Income')) {
+                        setActiveReport('Lift_Statement');
+                      }
+                    }}
+                    className="w-full text-left px-3.5 py-2.5 hover:bg-blue-50/80 transition flex items-center justify-between group"
+                  >
+                    <div className="min-w-0 pr-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-extrabold text-xs text-slate-900 group-hover:text-blue-600">
+                          Lift #{lift.liftNo}
+                        </span>
+                        {lift.owner && (
+                          <span className="text-[11px] font-bold text-slate-600 truncate">
+                            • {lift.owner}
+                          </span>
+                        )}
+                      </div>
+                      {lift.location && (
+                        <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                          📍 {lift.location}
+                        </p>
+                      )}
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-[10px] font-bold text-emerald-600">
+                        +{(lift.totalIncome || 0).toLocaleString()}
+                      </div>
+                      <div className="text-[10px] font-bold text-rose-500">
+                        -{(lift.totalExpense || 0).toLocaleString()}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* 3. Account Filter Dropdown */}
@@ -844,7 +1047,7 @@ export default function ReportTab({
           </div>
         </div>
 
-        {/* Missing Invoices Highlighting Toolbar (Requirement 4.2) */}
+        {/* Missing Invoices Highlighting Toolbar & Calculation Mode */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-slate-100 text-xs">
           <div className="flex items-center gap-3">
             <button
@@ -872,16 +1075,107 @@ export default function ReportTab({
             )}
           </div>
 
-          {selectedLift !== 'All' && (
-            <button
-              type="button"
-              onClick={() => setSelectedLift('All')}
-              className="text-xs text-blue-600 hover:text-blue-800 font-bold"
-            >
-              Clear Lift Filter (Show All Lifts)
-            </button>
-          )}
+          {/* Lift Search Calculation Filter: All, Income (আয়), Expense (ব্যয়) */}
+          <div className="flex items-center flex-wrap gap-2">
+            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+              Calculation:
+            </span>
+            <div className="inline-flex p-1 bg-slate-100 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setSearchViewMode('ALL')}
+                className={`px-3 py-1 text-xs font-bold rounded-lg transition ${
+                  searchViewMode === 'ALL'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                All (আয় ও ব্যয়)
+              </button>
+              <button
+                type="button"
+                onClick={() => setSearchViewMode('INCOME')}
+                className={`px-3 py-1 text-xs font-bold rounded-lg transition flex items-center gap-1 ${
+                  searchViewMode === 'INCOME'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-emerald-700 hover:text-emerald-900'
+                }`}
+              >
+                <span>Income (আয়)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSearchViewMode('EXPENSE')}
+                className={`px-3 py-1 text-xs font-bold rounded-lg transition flex items-center gap-1 ${
+                  searchViewMode === 'EXPENSE'
+                    ? 'bg-rose-600 text-white shadow-xs'
+                    : 'text-rose-700 hover:text-rose-900'
+                }`}
+              >
+                <span>Expense (ব্যয়)</span>
+              </button>
+            </div>
+
+            {isLiftSearchActive && (
+              <button
+                type="button"
+                onClick={clearLiftSearch}
+                className="text-xs text-blue-600 hover:text-blue-800 font-bold ml-2 underline cursor-pointer"
+              >
+                Clear Search
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Active Lift Banner (if searched or selected) */}
+        {isLiftSearchActive && (
+          <div className="bg-gradient-to-r from-blue-50/80 via-slate-50 to-indigo-50/80 border border-blue-200/80 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center font-black shrink-0">
+                <Building className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="font-extrabold text-sm text-slate-900">
+                    {selectedLift !== 'All' ? `Lift #${selectedLift}` : `Filter: "${liftSearchQuery}"`}
+                  </h4>
+                  {activeLiftInfo?.owner && (
+                    <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-md flex items-center gap-1">
+                      <User className="w-3 h-3" /> {activeLiftInfo.owner}
+                    </span>
+                  )}
+                </div>
+                {activeLiftInfo?.location && (
+                  <p className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1">
+                    <MapPin className="w-3 h-3 text-slate-400" /> {activeLiftInfo.location}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 text-xs font-bold self-end sm:self-center">
+              {searchViewMode !== 'EXPENSE' && (
+                <div className="text-emerald-700 text-right">
+                  <span className="text-[10px] uppercase text-emerald-600 block">আয় (Income)</span>
+                  <span>{((reportData as any).totalPaid || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
+                </div>
+              )}
+              {searchViewMode !== 'INCOME' && (
+                <div className="text-rose-700 text-right">
+                  <span className="text-[10px] uppercase text-rose-600 block">ব্যয় (Expense)</span>
+                  <span>{((reportData as any).totalExpense || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
+                </div>
+              )}
+              {searchViewMode === 'ALL' && (
+                <div className={`text-right ${(reportData as any).netProfit >= 0 ? 'text-blue-900' : 'text-amber-800'}`}>
+                  <span className="text-[10px] uppercase text-slate-500 block">নেট হিসাব (Margin)</span>
+                  <span>{((reportData as any).netProfit || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Live Preview Console */}
@@ -920,137 +1214,185 @@ export default function ReportTab({
             <div className="space-y-6">
               {/* Lift Statement Summary Cards */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-white p-4 rounded-2xl border border-slate-200">
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">Gross Invoiced</p>
-                  <p className="text-md sm:text-lg font-black text-slate-800 flex items-center gap-0.5 mt-1">
-                    <SaudiRiyalIcon className="w-3.5 h-3.5 text-slate-700 shrink-0" />
-                    <span>{(reportData as any).totalBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                  </p>
-                </div>
-                <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100">
-                  <p className="text-[10px] font-bold text-emerald-600 uppercase">Income Collected</p>
-                  <p className="text-md sm:text-lg font-black text-emerald-600 flex items-center gap-0.5 mt-1">
-                    <SaudiRiyalIcon className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                    <span>{(reportData as any).totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                  </p>
-                </div>
-                <div className="p-3 bg-rose-50 rounded-xl border border-rose-100">
-                  <p className="text-[10px] font-bold text-rose-500 uppercase">Total Lift Expenses</p>
-                  <p className="text-md sm:text-lg font-black text-rose-600 flex items-center gap-0.5 mt-1">
-                    <SaudiRiyalIcon className="w-3.5 h-3.5 text-rose-600 shrink-0" />
-                    <span>{(reportData as any).totalExpense.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                  </p>
-                </div>
-                <div className="p-3 bg-blue-50 rounded-xl border border-blue-100">
-                  <p className="text-[10px] font-bold text-blue-700 uppercase">Net Lift Margin</p>
-                  <p className="text-md sm:text-lg font-black text-blue-900 flex items-center gap-0.5 mt-1">
-                    <SaudiRiyalIcon className="w-3.5 h-3.5 text-blue-800 shrink-0" />
-                    <span>{(reportData as any).netProfit.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                  </p>
-                </div>
+                {searchViewMode !== 'EXPENSE' && (
+                  <>
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-100">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">Gross Invoiced</p>
+                      <p className="text-md sm:text-lg font-black text-slate-800 flex items-center gap-0.5 mt-1">
+                        <SaudiRiyalIcon className="w-3.5 h-3.5 text-slate-700 shrink-0" />
+                        <span>{(reportData as any).totalBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                      </p>
+                    </div>
+                    <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                      <p className="text-[10px] font-bold text-emerald-600 uppercase">Income Collected</p>
+                      <p className="text-md sm:text-lg font-black text-emerald-600 flex items-center gap-0.5 mt-1">
+                        <SaudiRiyalIcon className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>{(reportData as any).totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                      </p>
+                    </div>
+                  </>
+                )}
+                {searchViewMode === 'INCOME' && (
+                  <>
+                    <div className="p-3 bg-amber-50 rounded-xl border border-amber-100">
+                      <p className="text-[10px] font-bold text-amber-700 uppercase">Discount Granted</p>
+                      <p className="text-md sm:text-lg font-black text-amber-700 flex items-center gap-0.5 mt-1">
+                        <SaudiRiyalIcon className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                        <span>{(reportData as any).totalDiscount.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                      </p>
+                    </div>
+                    <div className="p-3 bg-rose-50 rounded-xl border border-rose-100">
+                      <p className="text-[10px] font-bold text-rose-600 uppercase">Outstanding Due</p>
+                      <p className="text-md sm:text-lg font-black text-rose-600 flex items-center gap-0.5 mt-1">
+                        <SaudiRiyalIcon className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                        <span>{(reportData as any).totalDue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                      </p>
+                    </div>
+                  </>
+                )}
+                {searchViewMode !== 'INCOME' && (
+                  <div className="p-3 bg-rose-50 rounded-xl border border-rose-100">
+                    <p className="text-[10px] font-bold text-rose-500 uppercase">Total Lift Expenses</p>
+                    <p className="text-md sm:text-lg font-black text-rose-600 flex items-center gap-0.5 mt-1">
+                      <SaudiRiyalIcon className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                      <span>{(reportData as any).totalExpense.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                    </p>
+                  </div>
+                )}
+                {searchViewMode === 'EXPENSE' && (
+                  <>
+                    <div className="p-3 bg-blue-50 rounded-xl border border-blue-100">
+                      <p className="text-[10px] font-bold text-blue-700 uppercase">Bank Outflow</p>
+                      <p className="text-md sm:text-lg font-black text-blue-900 flex items-center gap-0.5 mt-1">
+                        <SaudiRiyalIcon className="w-3.5 h-3.5 text-blue-800 shrink-0" />
+                        <span>{((reportData as any).rawLiftExpenses || []).filter((e: any) => e.account === 'Bank').reduce((s: number, e: any) => s + (e.amount || 0), 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                      </p>
+                    </div>
+                    <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100">
+                      <p className="text-[10px] font-bold text-emerald-700 uppercase">Cash Outflow</p>
+                      <p className="text-md sm:text-lg font-black text-emerald-800 flex items-center gap-0.5 mt-1">
+                        <SaudiRiyalIcon className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                        <span>{((reportData as any).rawLiftExpenses || []).filter((e: any) => e.account !== 'Bank').reduce((s: number, e: any) => s + (e.amount || 0), 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                      </p>
+                    </div>
+                  </>
+                )}
+                {searchViewMode === 'ALL' && (
+                  <div className="p-3 bg-blue-50 rounded-xl border border-blue-100">
+                    <p className="text-[10px] font-bold text-blue-700 uppercase">Net Lift Margin</p>
+                    <p className="text-md sm:text-lg font-black text-blue-900 flex items-center gap-0.5 mt-1">
+                      <SaudiRiyalIcon className="w-3.5 h-3.5 text-blue-800 shrink-0" />
+                      <span>{(reportData as any).netProfit.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+                    </p>
+                  </div>
+                )}
               </div>
 
-              {/* Lift Incomes Section */}
-              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                <div className="bg-slate-100 p-3.5 font-bold text-xs uppercase text-slate-700 border-b border-slate-200 flex items-center justify-between">
-                  <span>Lift Incomes ({(reportData as any).liftIncomes.length} records)</span>
-                  <span className="text-emerald-600 font-extrabold">Paid: {(reportData as any).totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
+              {/* Lift Incomes Section - shown when not in EXPENSE only mode */}
+              {searchViewMode !== 'EXPENSE' && (
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="bg-slate-100 p-3.5 font-bold text-xs uppercase text-slate-700 border-b border-slate-200 flex items-center justify-between">
+                    <span>Lift Incomes ({((reportData as any).rawLiftIncomes || (reportData as any).liftIncomes).length} records)</span>
+                    <span className="text-emerald-600 font-extrabold">Paid: {(reportData as any).totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
+                  </div>
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-[10px] font-bold uppercase text-slate-500 border-b border-slate-200">
+                      <tr>
+                        <th className="px-3 py-2.5 whitespace-nowrap">Date</th>
+                        <th className="px-3 py-2.5 whitespace-nowrap">Source</th>
+                        <th className="px-3 py-2.5 min-w-[130px]">Lift & Owner</th>
+                        <th className="px-3 py-2.5 text-right whitespace-nowrap">Gross</th>
+                        <th className="px-3 py-2.5 text-right whitespace-nowrap">Discount</th>
+                        <th className="px-3 py-2.5 text-right whitespace-nowrap">Net Bill</th>
+                        <th className="px-3 py-2.5 text-right text-emerald-600 whitespace-nowrap">Paid</th>
+                        <th className="px-3 py-2.5 text-right text-rose-600 whitespace-nowrap">Due</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {((reportData as any).rawLiftIncomes || (reportData as any).liftIncomes).map((i: any, idx: number) => {
+                        const missing = isMissingInvoice(i.liftNo);
+                        return (
+                          <tr
+                            key={i.id ? `rep-inc-${i.id}` : `rep-inc-${i.rowId}-${idx}`}
+                            className={highlightMissingInvoices && missing ? 'bg-amber-50/70 border-l-4 border-amber-500' : 'hover:bg-slate-50'}
+                          >
+                            <td className="px-3 py-2 font-medium text-slate-600 whitespace-nowrap">{i.date}</td>
+                            <td className="px-3 py-2 font-bold text-slate-800 whitespace-nowrap">{i.source}</td>
+                            <td className="px-3 py-2 min-w-[130px]">
+                              <span className="font-bold">Lift: {i.liftNo || 'N/A'}</span>
+                              {missing && <span className="ml-1 text-[9px] bg-amber-100 text-amber-800 px-1 rounded font-bold">⚠️ Check</span>}
+                              <span className="block text-[10px] text-slate-400 break-words">{i.owner} | {i.location}</span>
+                            </td>
+                            <td className="px-3 py-2 text-right whitespace-nowrap">{i.totalAmt?.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                            <td className="px-3 py-2 text-right text-amber-700 whitespace-nowrap">{i.discountAmt ? `-${i.discountAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '-'}</td>
+                            <td className="px-3 py-2 text-right font-bold text-blue-900 whitespace-nowrap">{(i.netAmt || (i.totalAmt - (i.discountAmt || 0))).toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                            <td className="px-3 py-2 text-right font-black text-emerald-600 whitespace-nowrap">{i.paidAmt?.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                            <td className="px-3 py-2 text-right font-black text-rose-600 whitespace-nowrap">{i.dueAmt?.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-50 text-[10px] font-bold uppercase text-slate-500 border-b border-slate-200">
-                    <tr>
-                      <th className="px-3 py-2.5 whitespace-nowrap">Date</th>
-                      <th className="px-3 py-2.5 whitespace-nowrap">Source</th>
-                      <th className="px-3 py-2.5 min-w-[130px]">Lift & Owner</th>
-                      <th className="px-3 py-2.5 text-right whitespace-nowrap">Gross</th>
-                      <th className="px-3 py-2.5 text-right whitespace-nowrap">Discount</th>
-                      <th className="px-3 py-2.5 text-right whitespace-nowrap">Net Bill</th>
-                      <th className="px-3 py-2.5 text-right text-emerald-600 whitespace-nowrap">Paid</th>
-                      <th className="px-3 py-2.5 text-right text-rose-600 whitespace-nowrap">Due</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {(reportData as any).liftIncomes.map((i: any, idx: number) => {
-                      const missing = isMissingInvoice(i.liftNo);
-                      return (
-                        <tr
-                          key={i.id ? `rep-inc-${i.id}` : `rep-inc-${i.rowId}-${idx}`}
-                          className={highlightMissingInvoices && missing ? 'bg-amber-50/70 border-l-4 border-amber-500' : 'hover:bg-slate-50'}
-                        >
-                          <td className="px-3 py-2 font-medium text-slate-600 whitespace-nowrap">{i.date}</td>
-                          <td className="px-3 py-2 font-bold text-slate-800 whitespace-nowrap">{i.source}</td>
-                          <td className="px-3 py-2 min-w-[130px]">
-                            <span className="font-bold">Lift: {i.liftNo || 'N/A'}</span>
-                            {missing && <span className="ml-1 text-[9px] bg-amber-100 text-amber-800 px-1 rounded font-bold">⚠️ Check</span>}
-                            <span className="block text-[10px] text-slate-400 break-words">{i.owner} | {i.location}</span>
-                          </td>
-                          <td className="px-3 py-2 text-right whitespace-nowrap">{i.totalAmt?.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                          <td className="px-3 py-2 text-right text-amber-700 whitespace-nowrap">{i.discountAmt ? `-${i.discountAmt.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '-'}</td>
-                          <td className="px-3 py-2 text-right font-bold text-blue-900 whitespace-nowrap">{(i.netAmt || (i.totalAmt - (i.discountAmt || 0))).toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                          <td className="px-3 py-2 text-right font-black text-emerald-600 whitespace-nowrap">{i.paidAmt?.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                          <td className="px-3 py-2 text-right font-black text-rose-600 whitespace-nowrap">{i.dueAmt?.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              )}
 
-              {/* Lift Expenses Section */}
-              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                <div className="bg-slate-100 p-3.5 font-bold text-xs uppercase text-slate-700 border-b border-slate-200 flex items-center justify-between">
-                  <span>Lift Expenses ({(reportData as any).liftExpenses.length} records)</span>
-                  <span className="text-rose-600 font-extrabold">Total Outflow: {(reportData as any).totalExpense.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
-                </div>
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-slate-50 text-[10px] font-bold uppercase text-slate-500 border-b border-slate-200">
-                    <tr>
-                      <th className="px-3 py-2.5 whitespace-nowrap">Date</th>
-                      <th className="px-3 py-2.5 whitespace-nowrap">Invoice No</th>
-                      <th className="px-3 py-2.5 whitespace-nowrap">Category</th>
-                      <th className="px-3 py-2.5 min-w-[140px]">Details & Notes</th>
-                      <th className="px-3 py-2.5 whitespace-nowrap">Account</th>
-                      <th className="px-3 py-2.5 text-right whitespace-nowrap">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {(reportData as any).liftExpenses.map((e: any, idx: number) => {
-                      const missing = isMissingInvoice(e.invoice);
-                      return (
-                        <tr
-                          key={e.id ? `rep-exp-${e.id}` : `rep-exp-${e.rowId}-${idx}`}
-                          className={highlightMissingInvoices && missing ? 'bg-amber-50/70 border-l-4 border-amber-500' : 'hover:bg-slate-50'}
-                        >
-                          <td className="px-3 py-2 font-medium text-slate-600 whitespace-nowrap">{e.date}</td>
-                          <td className="px-3 py-2 font-mono font-bold whitespace-nowrap">
-                            {missing ? (
-                              <span className="px-1.5 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded text-[9px]">
-                                ⚠️ Missing Invoice
+              {/* Lift Expenses Section - shown when not in INCOME only mode */}
+              {searchViewMode !== 'INCOME' && (
+                <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                  <div className="bg-slate-100 p-3.5 font-bold text-xs uppercase text-slate-700 border-b border-slate-200 flex items-center justify-between">
+                    <span>Lift Expenses ({((reportData as any).rawLiftExpenses || (reportData as any).liftExpenses).length} records)</span>
+                    <span className="text-rose-600 font-extrabold">Total Outflow: {(reportData as any).totalExpense.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
+                  </div>
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-50 text-[10px] font-bold uppercase text-slate-500 border-b border-slate-200">
+                      <tr>
+                        <th className="px-3 py-2.5 whitespace-nowrap">Date</th>
+                        <th className="px-3 py-2.5 whitespace-nowrap">Invoice No</th>
+                        <th className="px-3 py-2.5 whitespace-nowrap">Category</th>
+                        <th className="px-3 py-2.5 min-w-[140px]">Details & Notes</th>
+                        <th className="px-3 py-2.5 whitespace-nowrap">Account</th>
+                        <th className="px-3 py-2.5 text-right whitespace-nowrap">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {((reportData as any).rawLiftExpenses || (reportData as any).liftExpenses).map((e: any, idx: number) => {
+                        const missing = isMissingInvoice(e.invoice);
+                        return (
+                          <tr
+                            key={e.id ? `rep-exp-${e.id}` : `rep-exp-${e.rowId}-${idx}`}
+                            className={highlightMissingInvoices && missing ? 'bg-amber-50/70 border-l-4 border-amber-500' : 'hover:bg-slate-50'}
+                          >
+                            <td className="px-3 py-2 font-medium text-slate-600 whitespace-nowrap">{e.date}</td>
+                            <td className="px-3 py-2 font-mono font-bold whitespace-nowrap">
+                              {missing ? (
+                                <span className="px-1.5 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded text-[9px]">
+                                  ⚠️ Missing Invoice
+                                </span>
+                              ) : (
+                                e.invoice
+                              )}
+                            </td>
+                            <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap">
+                              {e.category} {e.subCategory ? `(${e.subCategory})` : ''}
+                            </td>
+                            <td className="px-3 py-2 text-slate-600 min-w-[140px] break-words">{e.description || '-'}</td>
+                            <td className="px-3 py-2 whitespace-nowrap">
+                              <span className={`px-2 py-0.5 text-[9px] font-bold rounded border ${
+                                e.account === 'Bank' ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              }`}>
+                                {e.account === 'Bank' ? 'Company Bank' : 'My Cash'}
                               </span>
-                            ) : (
-                              e.invoice
-                            )}
-                          </td>
-                          <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap">
-                            {e.category} {e.subCategory ? `(${e.subCategory})` : ''}
-                          </td>
-                          <td className="px-3 py-2 text-slate-600 min-w-[140px] break-words">{e.description || '-'}</td>
-                          <td className="px-3 py-2 whitespace-nowrap">
-                            <span className={`px-2 py-0.5 text-[9px] font-bold rounded border ${
-                              e.account === 'Bank' ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                            }`}>
-                              {e.account === 'Bank' ? 'Company Bank' : 'My Cash'}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 text-right font-black text-rose-600 whitespace-nowrap">
-                            {e.amount?.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                            </td>
+                            <td className="px-3 py-2 text-right font-black text-rose-600 whitespace-nowrap">
+                              {e.amount?.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 

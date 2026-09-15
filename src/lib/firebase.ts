@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 import { getAnalytics, isSupported } from 'firebase/analytics';
 import appletConfig from '../../firebase-applet-config.json';
 
@@ -88,7 +88,17 @@ try {
     app = getApps().length === 0 ? initializeApp(config) : getApp();
     auth = getAuth(app);
     const dbId = config.firestoreDatabaseId || PRIMARY_DB_ID;
-    db = dbId && dbId !== '(default)' ? getFirestore(app, dbId) : getFirestore(app);
+    if (typeof window !== 'undefined') {
+      try {
+        db = initializeFirestore(app, {
+          localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+        }, dbId && dbId !== '(default)' ? dbId : undefined);
+      } catch {
+        db = dbId && dbId !== '(default)' ? getFirestore(app, dbId) : getFirestore(app);
+      }
+    } else {
+      db = dbId && dbId !== '(default)' ? getFirestore(app, dbId) : getFirestore(app);
+    }
     if (typeof window !== 'undefined') {
       isSupported().then(supported => {
         if (supported) {

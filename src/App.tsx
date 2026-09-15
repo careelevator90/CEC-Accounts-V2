@@ -50,16 +50,16 @@ import { Expense, Income, TabType, ToastMessage, SheetRow, SheetDataResponse, is
 const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxpHfJ7mWx2LFuv6E5xrboiiK8oEJDIRbQ0kpdtGmucxGDJlS8Ynv730p6Tm8-p87Z9/exec';
 
 export default function App() {
-  // Authentication & Navigation
+  // Authentication & Navigation (persisted in localStorage and sessionStorage to survive idle timeouts)
   const [isLoggedIn, setIsLoggedIn] = useState(() => {
-    return sessionStorage.getItem('isLoggedIn') === 'true';
+    return localStorage.getItem('isLoggedIn') === 'true' || sessionStorage.getItem('isLoggedIn') === 'true';
   });
   const [isAuthReady, setIsAuthReady] = useState(() => !hasValidFirebaseConfig() || !auth);
   const [userEmail, setUserEmail] = useState(() => {
-    return sessionStorage.getItem('loggedInUserEmail') || '';
+    return localStorage.getItem('loggedInUserEmail') || sessionStorage.getItem('loggedInUserEmail') || '';
   });
   const [userRole, setUserRole] = useState<'Read Only' | 'Full Access'>(() => {
-    const cachedEmail = sessionStorage.getItem('loggedInUserEmail') || '';
+    const cachedEmail = localStorage.getItem('loggedInUserEmail') || sessionStorage.getItem('loggedInUserEmail') || '';
     return isFullAccessEmail(cachedEmail) ? 'Full Access' : 'Read Only';
   });
 
@@ -82,13 +82,20 @@ export default function App() {
         sessionStorage.setItem('loggedInUserEmail', email);
         sessionStorage.setItem('loggedInUserRole', role);
         sessionStorage.removeItem('isFallbackLogin');
+        localStorage.setItem('isLoggedIn', 'true');
+        localStorage.setItem('loggedInUserEmail', email);
+        localStorage.setItem('loggedInUserRole', role);
+        localStorage.removeItem('isFallbackLogin');
       } else {
-        const isFallback = sessionStorage.getItem('isFallbackLogin') === 'true';
+        const isFallback = sessionStorage.getItem('isFallbackLogin') === 'true' || localStorage.getItem('isFallbackLogin') === 'true';
         if (!isFallback) {
           setIsLoggedIn(false);
           sessionStorage.removeItem('isLoggedIn');
           sessionStorage.removeItem('loggedInUserEmail');
           sessionStorage.removeItem('loggedInUserRole');
+          localStorage.removeItem('isLoggedIn');
+          localStorage.removeItem('loggedInUserEmail');
+          localStorage.removeItem('loggedInUserRole');
         }
       }
     });
@@ -131,19 +138,40 @@ export default function App() {
   });
   const [showConfigDrawer, setShowConfigDrawer] = useState(false);
 
-  // App Master Datasets
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [incomes, setIncomes] = useState<Income[]>([]);
+  // App Master Datasets with instant local persistence
+  const [expenses, setExpenses] = useState<Expense[]>(() => {
+    try {
+      const cached = localStorage.getItem('careElevatorExpenses');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [incomes, setIncomes] = useState<Income[]>(() => {
+    try {
+      const cached = localStorage.getItem('careElevatorIncomes');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [owners, setOwners] = useState<string[]>(() => {
     const cached = localStorage.getItem('careElevatorOwners');
     return cached ? JSON.parse(cached) : ['Ahmad Barnawei', 'Jahirul Islam'];
   });
 
-  // Synchronized global month tracker (defaults to current month, e.g. "2026-07")
+  // Synchronized global month tracker (persisted to localStorage)
   const [selectedMonth, setSelectedMonth] = useState(() => {
-    return new Date().toISOString().slice(0, 7);
+    return localStorage.getItem('careElevatorSelectedMonth') || new Date().toISOString().slice(0, 7);
   });
+
+  const handleSetSelectedMonth = useCallback((month: string) => {
+    setSelectedMonth(month);
+    localStorage.setItem('careElevatorSelectedMonth', month);
+  }, []);
+
+  const [syncRetryTrigger, setSyncRetryTrigger] = useState(0);
 
   // Toasts state management
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -272,7 +300,91 @@ export default function App() {
     }
   };
 
-  // Real-time Firestore synchronizer for Expenses and Incomes
+  // Fast manual or background sync from Firestore
+  const syncDatabase = useCallback(async (silent: boolean = false) => {
+    if (!db) {
+      if (!silent) addToast('Firestore database not ready. Please verify connection.', 'error');
+      return;
+    }
+    if (!silent) setIsLoading(true);
+    try {
+      const expSnap = await getDocs(collection(db, 'expenses'));
+      const incSnap = await getDocs(collection(db, 'incomes'));
+
+      const expList: Expense[] = expSnap.docs.map(d => {
+        const data = d.data();
+        const rawLift = data.liftNo != null ? String(data.liftNo).trim() : '';
+        return {
+          id: d.id,
+          rowId: Number(data.rowId) || 0,
+          date: String(data.date || ''),
+          invoice: String(data.invoice || ''),
+          category: String(data.category || ''),
+          subCategory: String(data.subCategory || ''),
+          liftNo: rawLift,
+          owner: String(data.owner || ''),
+          location: String(data.location || ''),
+          description: String(data.description || ''),
+          amount: typeof data.amount === 'number' ? data.amount : (parseFloat(data.amount) || 0),
+          account: data.account === 'Bank' ? 'Bank' : 'Cash',
+          isAdvance: !!data.isAdvance,
+          advancePerson: String(data.advancePerson || ''),
+          advanceStatus: data.advanceStatus === 'Adjusted' ? 'Adjusted' : 'Pending',
+        };
+      });
+      expList.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+      setExpenses(expList);
+      if (expList.length > 0) {
+        localStorage.setItem('careElevatorExpenses', JSON.stringify(expList));
+      }
+
+      const incList: Income[] = incSnap.docs.map(d => {
+        const data = d.data();
+        const rawLift = data.liftNo != null ? String(data.liftNo).trim() : '';
+        const total = typeof data.totalAmt === 'number' ? data.totalAmt : (parseFloat(data.totalAmt) || 0);
+        const discount = typeof data.discountAmt === 'number' ? data.discountAmt : (parseFloat(data.discountAmt) || 0);
+        const net = typeof data.netAmt === 'number' ? data.netAmt : Math.max(0, total - discount);
+        const paid = typeof data.paidAmt === 'number' ? data.paidAmt : (parseFloat(data.paidAmt) || 0);
+        const due = typeof data.dueAmt === 'number' ? data.dueAmt : Math.max(0, net - paid);
+        return {
+          id: d.id,
+          rowId: Number(data.rowId) || 0,
+          date: String(data.date || ''),
+          source: String(data.source || ''),
+          liftNo: rawLift,
+          owner: String(data.owner || ''),
+          location: String(data.location || ''),
+          totalAmt: total,
+          discountAmt: discount,
+          netAmt: net,
+          paidAmt: paid,
+          dueAmt: due,
+          description: String(data.description || ''),
+          account: data.account === 'Bank' ? 'Bank' : 'Cash',
+        };
+      });
+      incList.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+      setIncomes(incList);
+      if (incList.length > 0) {
+        localStorage.setItem('careElevatorIncomes', JSON.stringify(incList));
+      }
+
+      if (!silent) {
+        addToast(`Synchronized! ${expList.length} expenses and ${incList.length} incomes loaded.`, 'success');
+      }
+    } catch (e: any) {
+      console.error('Sync failed:', e);
+      if (!silent) {
+        addToast(`Sync error: ${e?.message || 'Database error'}`, 'error');
+      }
+    } finally {
+      if (!silent) {
+        setIsLoading(false);
+      }
+    }
+  }, [addToast]);
+
+  // Real-time Firestore synchronizer for Expenses and Incomes with automatic reconnect
   useEffect(() => {
     if (!isLoggedIn) return;
 
@@ -295,10 +407,14 @@ export default function App() {
       return;
     }
 
+    let isSubscribed = true;
+    let retryTimer: any = null;
+
     // Real-time Firestore listener for Expenses
     const unsubExpenses = onSnapshot(
       collection(db, 'expenses'),
       (snapshot) => {
+        if (!isSubscribed) return;
         const list: Expense[] = snapshot.docs.map((d) => {
           const data = d.data();
           const rawLift = data.liftNo != null ? String(data.liftNo).trim() : '';
@@ -323,13 +439,22 @@ export default function App() {
 
         list.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
         setExpenses(list);
-        localStorage.setItem('careElevatorExpenses', JSON.stringify(list));
+        if (list.length > 0) {
+          localStorage.setItem('careElevatorExpenses', JSON.stringify(list));
+        }
         setIsLoading(false);
       },
       (error) => {
-        console.warn('Firestore expenses listener:', error?.message || error);
+        console.warn('Firestore expenses listener notice:', error?.message || error);
         handleFirestoreError(error, OperationType.LIST, 'expenses');
         setIsLoading(false);
+        // Automatically schedule reconnect if stream disconnected during idle
+        if (isSubscribed) {
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => {
+            if (isSubscribed) setSyncRetryTrigger(prev => prev + 1);
+          }, 3000);
+        }
       }
     );
 
@@ -337,6 +462,7 @@ export default function App() {
     const unsubIncomes = onSnapshot(
       collection(db, 'incomes'),
       (snapshot) => {
+        if (!isSubscribed) return;
         const list: Income[] = snapshot.docs.map((d) => {
           const data = d.data();
           const rawLift = data.liftNo != null ? String(data.liftNo).trim() : '';
@@ -366,95 +492,66 @@ export default function App() {
 
         list.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
         setIncomes(list);
-        localStorage.setItem('careElevatorIncomes', JSON.stringify(list));
+        if (list.length > 0) {
+          localStorage.setItem('careElevatorIncomes', JSON.stringify(list));
+        }
         setIsLoading(false);
       },
       (error) => {
-        console.warn('Firestore incomes listener:', error?.message || error);
+        console.warn('Firestore incomes listener notice:', error?.message || error);
         handleFirestoreError(error, OperationType.LIST, 'incomes');
         setIsLoading(false);
+        // Automatically schedule reconnect if stream disconnected during idle
+        if (isSubscribed) {
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => {
+            if (isSubscribed) setSyncRetryTrigger(prev => prev + 1);
+          }, 3000);
+        }
       }
     );
 
     return () => {
+      isSubscribed = false;
+      clearTimeout(retryTimer);
       unsubExpenses();
       unsubIncomes();
     };
-  }, [isLoggedIn, userEmail, fetchUserRole, fetchOwners]);
+  }, [isLoggedIn, isAuthReady, userEmail, syncRetryTrigger, fetchUserRole, fetchOwners]);
 
-  // Fast manual sync from Firestore
-  const syncDatabase = async () => {
-    if (!db) {
-      addToast('Firestore database not ready. Please verify connection.', 'error');
-      return;
-    }
-    setIsLoading(true);
-    try {
-      const expSnap = await getDocs(collection(db, 'expenses'));
-      const incSnap = await getDocs(collection(db, 'incomes'));
+  // Keep-alive synchronizer: Auto-sync on visibility change (reopening tab/phone screen), window focus, or online reconnect
+  useEffect(() => {
+    if (!isLoggedIn) return;
 
-      const expList: Expense[] = expSnap.docs.map(d => {
-        const data = d.data();
-        const rawLift = data.liftNo != null ? String(data.liftNo).trim() : '';
-        return {
-          id: d.id,
-          rowId: Number(data.rowId) || 0,
-          date: String(data.date || ''),
-          invoice: String(data.invoice || ''),
-          category: String(data.category || ''),
-          subCategory: String(data.subCategory || ''),
-          liftNo: rawLift,
-          owner: String(data.owner || ''),
-          location: String(data.location || ''),
-          description: String(data.description || ''),
-          amount: typeof data.amount === 'number' ? data.amount : (parseFloat(data.amount) || 0),
-          account: data.account === 'Bank' ? 'Bank' : 'Cash',
-          isAdvance: !!data.isAdvance,
-          advancePerson: String(data.advancePerson || ''),
-          advanceStatus: data.advanceStatus === 'Adjusted' ? 'Adjusted' : 'Pending',
-        };
-      });
-      expList.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
-      setExpenses(expList);
-      localStorage.setItem('careElevatorExpenses', JSON.stringify(expList));
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        syncDatabase(true);
+      }
+    };
 
-      const incList: Income[] = incSnap.docs.map(d => {
-        const data = d.data();
-        const rawLift = data.liftNo != null ? String(data.liftNo).trim() : '';
-        const total = typeof data.totalAmt === 'number' ? data.totalAmt : (parseFloat(data.totalAmt) || 0);
-        const discount = typeof data.discountAmt === 'number' ? data.discountAmt : (parseFloat(data.discountAmt) || 0);
-        const net = typeof data.netAmt === 'number' ? data.netAmt : Math.max(0, total - discount);
-        const paid = typeof data.paidAmt === 'number' ? data.paidAmt : (parseFloat(data.paidAmt) || 0);
-        const due = typeof data.dueAmt === 'number' ? data.dueAmt : Math.max(0, net - paid);
-        return {
-          id: d.id,
-          rowId: Number(data.rowId) || 0,
-          date: String(data.date || ''),
-          source: String(data.source || ''),
-          liftNo: rawLift,
-          owner: String(data.owner || ''),
-          location: String(data.location || ''),
-          totalAmt: total,
-          discountAmt: discount,
-          netAmt: net,
-          paidAmt: paid,
-          dueAmt: due,
-          description: String(data.description || ''),
-          account: data.account === 'Bank' ? 'Bank' : 'Cash',
-        };
-      });
-      incList.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
-      setIncomes(incList);
-      localStorage.setItem('careElevatorIncomes', JSON.stringify(incList));
+    const handleOnline = () => {
+      syncDatabase(true);
+      setSyncRetryTrigger(prev => prev + 1);
+    };
 
-      addToast(`Synchronized! ${expList.length} expenses and ${incList.length} incomes loaded.`, 'success');
-    } catch (e: any) {
-      console.error('Sync failed:', e);
-      addToast(`Sync error: ${e?.message || 'Database error'}`, 'error');
-    } finally {
-      setIsLoading(false);
-    }
-  };
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    window.addEventListener('online', handleOnline);
+
+    // Periodic heartbeat sync every 2 minutes while app is in foreground
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        syncDatabase(true);
+      }
+    }, 2 * 60 * 1000);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      window.removeEventListener('online', handleOnline);
+      clearInterval(interval);
+    };
+  }, [isLoggedIn, syncDatabase]);
 
   // Save Config URL
   const saveScriptConfig = (newUrl: string) => {
@@ -654,6 +751,10 @@ export default function App() {
     sessionStorage.removeItem('loggedInUserEmail');
     sessionStorage.removeItem('loggedInUserRole');
     sessionStorage.removeItem('isFallbackLogin');
+    localStorage.removeItem('isLoggedIn');
+    localStorage.removeItem('loggedInUserEmail');
+    localStorage.removeItem('loggedInUserRole');
+    localStorage.removeItem('isFallbackLogin');
     if (auth) {
       try {
         await signOut(auth);
@@ -672,6 +773,11 @@ export default function App() {
         <Login onSuccess={(email, role) => {
           setUserRole(role);
           sessionStorage.setItem('loggedInUserRole', role);
+          sessionStorage.setItem('loggedInUserEmail', email);
+          sessionStorage.setItem('isLoggedIn', 'true');
+          localStorage.setItem('loggedInUserRole', role);
+          localStorage.setItem('loggedInUserEmail', email);
+          localStorage.setItem('isLoggedIn', 'true');
           setUserEmail(email);
           setIsLoggedIn(true);
         }} addToast={addToast} />
@@ -763,7 +869,7 @@ export default function App() {
 
             {/* Sync Refresh data */}
             <button
-              onClick={syncDatabase}
+              onClick={() => syncDatabase(false)}
               disabled={isLoading}
               className="p-2 sm:px-3 sm:py-2 rounded-xl bg-slate-50 text-slate-600 hover:text-blue-600 border border-slate-200 hover:border-blue-200 transition-all flex items-center gap-1.5 text-xs font-semibold disabled:opacity-50 cursor-pointer"
               title="Reload database"
@@ -789,7 +895,7 @@ export default function App() {
                   expenses={expenses}
                   incomes={incomes}
                   selectedMonth={selectedMonth}
-                  setSelectedMonth={setSelectedMonth}
+                  setSelectedMonth={handleSetSelectedMonth}
                   isLoading={isLoading}
                   onClickDueCard={() => {
                     setIncomeFilterDue(true);
@@ -803,7 +909,7 @@ export default function App() {
                 <ExpenseTab 
                   expenses={expenses}
                   selectedMonth={selectedMonth}
-                  setSelectedMonth={setSelectedMonth}
+                  setSelectedMonth={handleSetSelectedMonth}
                   onSave={handleSaveRecord}
                   onDelete={(id) => handleDeleteRecord('Expenses', id)}
                   addToast={addToast}
@@ -818,7 +924,7 @@ export default function App() {
                 <IncomeTab 
                   incomes={incomes}
                   selectedMonth={selectedMonth}
-                  setSelectedMonth={setSelectedMonth}
+                  setSelectedMonth={handleSetSelectedMonth}
                   onSave={handleSaveRecord}
                   onDelete={(id) => handleDeleteRecord('Incomes', id)}
                   addToast={addToast}
@@ -835,7 +941,7 @@ export default function App() {
                   expenses={expenses}
                   incomes={incomes}
                   selectedMonth={selectedMonth}
-                  setSelectedMonth={setSelectedMonth}
+                  setSelectedMonth={handleSetSelectedMonth}
                   addToast={addToast}
                 />
               )}

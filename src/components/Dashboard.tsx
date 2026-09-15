@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { 
   TrendingUp, 
@@ -59,6 +59,25 @@ export default function Dashboard({
 }: DashboardProps) {
   const [filterType, setFilterType] = useState<'monthly' | 'all'>('monthly');
   const [chartView, setChartView] = useState<'weekly' | 'daily' | 'totals'>('weekly');
+
+  // Auto-align selected month to latest available records if current selection is empty and no custom month is saved
+  useEffect(() => {
+    if (expenses.length > 0 || incomes.length > 0) {
+      const hasMonthData = expenses.some(e => e.date && e.date.startsWith(selectedMonth)) || 
+                           incomes.some(i => i.date && i.date.startsWith(selectedMonth));
+      const explicitlySelected = localStorage.getItem('careElevatorSelectedMonth');
+      if (!hasMonthData && !explicitlySelected) {
+        const allDates = [...expenses.map(e => e.date), ...incomes.map(i => i.date)]
+          .filter(d => d && d.length >= 7)
+          .sort()
+          .reverse();
+        if (allDates.length > 0) {
+          const latestMonth = allDates[0].slice(0, 7);
+          setSelectedMonth(latestMonth);
+        }
+      }
+    }
+  }, [expenses, incomes, selectedMonth, setSelectedMonth]);
 
   // Filter lists based on mode
   const filteredExpenses = filterType === 'monthly'
