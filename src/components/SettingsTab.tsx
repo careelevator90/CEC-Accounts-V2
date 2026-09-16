@@ -1021,7 +1021,7 @@ export default function SettingsTab({
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Web app-টি সরাসরি APK-র ভেতরে এম্বেড থাকবে। কোনো Google AI Studio লোগো বা গুগল লগইন চাইবে না। মোবাইল খুললেই মুহূর্তের মধ্যে অ্যাপ চালু হবে এবং ফায়ারবেসের সাথে রিয়েল-টাইমে ডেটা সিঙ্ক হবে।
+                  The web app is bundled directly inside the APK. No Google AI Studio logo or Google login prompts required. Launches instantly on mobile and syncs data in real-time with Firebase.
                 </p>
               </button>
 
@@ -1039,7 +1039,7 @@ export default function SettingsTab({
                   <span>🌐 Hosted Cloud Web URL</span>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  লাইভ পাবলিক সার্ভার থেকে লোড করবে (যেমন Firebase Hosting বা Cloud Run Deployed URL)। <i>(নোট: ais-dev-... লিঙ্ক ব্যবহার করলে মোবাইলে গুগল লগইন চাইবে)</i>.
+                  Loads from a live public server (such as Firebase Hosting or Cloud Run Deployed URL). <i>(Note: Internal ais-dev links will require Google authentication on mobile)</i>.
                 </p>
               </button>
             </div>
@@ -1104,12 +1104,12 @@ export default function SettingsTab({
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-800">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <div className="space-y-1 text-[11px] leading-relaxed">
-                  <span className="font-bold block">⚠️ AI Studio প্রাইভেট ডেভেলপমেন্ট লিঙ্ক সনাক্ত হয়েছে:</span>
+                  <span className="font-bold block">⚠️ Private AI Studio Development Link Detected:</span>
                   <p>
-                    আপনি যে URL-টি দিয়েছেন (<code className="font-mono bg-amber-100/80 px-1 py-0.5 rounded">{androidTargetUrl}</code>) সেটি Google AI Studio-র প্রাইভেট ডেভেলপমেন্ট প্রিভিউ। এটি মোবাইল ডিভাইসে গুগল একাউন্ট যাচাই করতে বলে।
+                    The URL you provided (<code className="font-mono bg-amber-100/80 px-1 py-0.5 rounded">{androidTargetUrl}</code>) is an internal development preview link, which prompts for Google account sign-in on mobile devices.
                   </p>
                   <p className="font-semibold text-amber-900">
-                    💡 সমাধান: উপরের <b>"🚀 Standalone Native Bundle"</b> অপশনটি বেছে নিন, অথবা উপরে AI Studio-র <b>Deploy</b> বাটনে ক্লিক করে পাওয়া পাবলিক লিংকটি এখানে দিন।
+                    💡 Recommendation: Select <b>"🚀 Standalone Native Bundle"</b> above, or deploy your app and paste the public production URL here.
                   </p>
                 </div>
               </div>

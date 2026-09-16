@@ -27,8 +27,12 @@ import {
   X,
   User,
   MapPin,
-  ArrowUpDown
+  ArrowUpDown,
+  Download,
+  Loader2
 } from 'lucide-react';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 import { Expense, Income, isMissingInvoice } from '../types';
 import { SaudiRiyalIcon } from './SaudiRiyalIcon';
 
@@ -73,6 +77,7 @@ export default function ReportTab({
   const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
   const [highlightMissingInvoices, setHighlightMissingInvoices] = useState<boolean>(true);
   const [timeMode, setTimeMode] = useState<'monthly' | 'all'>('monthly');
+  const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
 
   // Extract list of all unique lifts across incomes & expenses with rich summary
   const allLifts = useMemo(() => {
@@ -219,7 +224,7 @@ export default function ReportTab({
     if (report === 'Expense_Owner_Payment') return 'Owner Payment Report';
     if (report === 'Expense_Advances') return 'Cash Advances for Purchasing Materials';
     if (report === 'Income_All') return 'Total Incomes Report (All)';
-    if (report === 'Income_Overview') return 'Income Overview (Cash vs Bank & Dues)';
+    if (report === 'Income_Overview') return 'Income Overview (by Category)';
     if (report === 'Income_Bank') return 'Bank Account Inflow Report';
     if (report === 'Income_Installation') return 'Installation Income Report';
     if (report === 'Income_Repair') return 'Lift Repair Income Report';
@@ -284,6 +289,8 @@ export default function ReportTab({
           if (selectedLift !== 'All' && e.liftNo) {
             return String(e.liftNo ?? '').trim().toLowerCase() === String(selectedLift ?? '').trim().toLowerCase();
           }
+          // Material Advances are excluded from Expense Overview (by Category) as requested
+          if (e.isAdvance || e.category === 'Cash Advance') return false;
           return true;
         });
 
@@ -291,7 +298,6 @@ export default function ReportTab({
         const totalLiftMaintenance = matches.filter(e => e.category === 'Maintenance' && e.subCategory === 'Lift Maintenance').reduce((sum, e) => sum + e.amount, 0);
         const totalCarMaintenance = matches.filter(e => e.category === 'Maintenance' && e.subCategory === 'Car Maintenance').reduce((sum, e) => sum + e.amount, 0);
         const totalOffice = matches.filter(e => e.category === 'Maintenance' && (e.subCategory === 'Office & Staff House' || e.subCategory === 'Office & Housing')).reduce((sum, e) => sum + e.amount, 0);
-        const totalAdvances = matches.filter(e => e.isAdvance || e.category === 'Cash Advance').reduce((sum, e) => sum + e.amount, 0);
         const totalOwner = matches.filter(e => e.category === 'Owner Payment').reduce((sum, e) => sum + e.amount, 0);
 
         const grandTotal = matches.reduce((sum, e) => sum + e.amount, 0);
@@ -311,7 +317,6 @@ export default function ReportTab({
             { name: 'Lift Maintenance', amount: totalLiftMaintenance },
             { name: 'Car Maintenance', amount: totalCarMaintenance },
             { name: 'Office & Housing', amount: totalOffice },
-            { name: 'Material Advances', amount: totalAdvances },
             { name: 'Owner Payments', amount: totalOwner },
           ]
         };
@@ -395,9 +400,34 @@ export default function ReportTab({
       const missingInvoicesCount = list.filter(i => isMissingInvoice(i.liftNo)).length;
 
       if (activeReport === 'Income_Overview') {
-        const totalYearly = list.filter(i => i.source === 'Yearly Lift Maintenance').reduce((sum, i) => sum + (i.paidAmt || 0), 0);
-        const totalInstall = list.filter(i => i.source === 'Installation').reduce((sum, i) => sum + (i.paidAmt || 0), 0);
-        const totalRepair = list.filter(i => i.source === 'Lift Repair').reduce((sum, i) => sum + (i.paidAmt || 0), 0);
+        const sources = ['Yearly Lift Maintenance', 'Installation', 'Lift Repair'];
+        const existingSources = list.map(i => i.source).filter(Boolean) as string[];
+        const allSources = Array.from(new Set([...sources, ...existingSources]));
+
+        const categories = allSources.map(sourceName => {
+          const items = list.filter(i => (i.source || '').trim().toLowerCase() === sourceName.trim().toLowerCase());
+          const billed = items.reduce((sum, i) => sum + (i.totalAmt || 0), 0);
+          const discount = items.reduce((sum, i) => sum + (i.discountAmt || 0), 0);
+          const netBilled = items.reduce((sum, i) => sum + (i.netAmt !== undefined ? i.netAmt : ((i.totalAmt || 0) - (i.discountAmt || 0))), 0);
+          const paid = items.reduce((sum, i) => sum + (i.paidAmt || 0), 0);
+          const due = items.reduce((sum, i) => sum + (i.dueAmt || 0), 0);
+          const catCash = items.filter(i => i.account !== 'Bank').reduce((sum, i) => sum + (i.paidAmt || 0), 0);
+          const catBank = items.filter(i => i.account === 'Bank').reduce((sum, i) => sum + (i.paidAmt || 0), 0);
+
+          return {
+            name: sourceName === 'Installation' ? 'Installation Income' : (sourceName === 'Lift Repair' ? 'Lift Repair Income' : sourceName),
+            rawSource: sourceName,
+            count: items.length,
+            billed,
+            discount,
+            netBilled,
+            paid,
+            due,
+            paidCash: catCash,
+            paidBank: catBank,
+            amount: paid
+          };
+        });
 
         return {
           type: 'income_overview',
@@ -410,11 +440,7 @@ export default function ReportTab({
           paidCash,
           paidBank,
           missingInvoicesCount,
-          categories: [
-            { name: 'Yearly Lift Maintenance', amount: totalYearly },
-            { name: 'Installation Income', amount: totalInstall },
-            { name: 'Lift Repair Income', amount: totalRepair },
-          ]
+          categories
         };
       }
 
@@ -445,8 +471,8 @@ export default function ReportTab({
     isLiftSearchActive
   ]);
 
-  // Professional Print Handler
-  const handlePrint = () => {
+  // Build Complete Report HTML (Shared between Print and PDF Download)
+  const buildFullReportHtml = (includePrintScript: boolean = false) => {
     const monthName = timeMode === 'all' 
       ? 'All Time' 
       : new Date(selectedMonth + '-02').toLocaleString('en-US', { month: 'long', year: 'numeric' });
@@ -658,7 +684,77 @@ export default function ReportTab({
           </tfoot>
         </table>
       `;
-    } else if (reportData.type === 'income_list' || reportData.type === 'income_overview') {
+    } else if (reportData.type === 'income_overview') {
+      const data = reportData as any;
+      bodyContent = `
+        <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:15px; margin:20px 0; display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; text-align:center;">
+          <div style="border-right:1px solid #cbd5e1;">
+            <p style="font-size:10px; font-weight:bold; color:#64748b; margin:0 0 5px 0;">Total Collected</p>
+            <h4 style="font-size:15px; font-weight:900; color:#16a34a; margin:0;">${printRiyalIcon} ${data.totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</h4>
+          </div>
+          <div style="border-right:1px solid #cbd5e1;">
+            <p style="font-size:10px; font-weight:bold; color:#64748b; margin:0 0 5px 0;">Collected in My Cash</p>
+            <h4 style="font-size:15px; font-weight:900; color:#334155; margin:0;">${printRiyalIcon} ${data.paidCash.toLocaleString('en-US', { minimumFractionDigits: 2 })}</h4>
+          </div>
+          <div style="border-right:1px solid #cbd5e1;">
+            <p style="font-size:10px; font-weight:bold; color:#64748b; margin:0 0 5px 0;">Collected in Company Bank</p>
+            <h4 style="font-size:15px; font-weight:900; color:#2563eb; margin:0;">${printRiyalIcon} ${data.paidBank.toLocaleString('en-US', { minimumFractionDigits: 2 })}</h4>
+          </div>
+          <div>
+            <p style="font-size:10px; font-weight:bold; color:#64748b; margin:0 0 5px 0;">Remaining Due</p>
+            <h4 style="font-size:15px; font-weight:900; color:#dc2626; margin:0;">${printRiyalIcon} ${data.totalDue.toLocaleString('en-US', { minimumFractionDigits: 2 })}</h4>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th style="text-align:left;">Income Category</th>
+              <th style="text-align:center;">Contracts</th>
+              <th style="text-align:right;">Gross Billed</th>
+              <th style="text-align:right;">Discount</th>
+              <th style="text-align:right;">Net Billed</th>
+              <th style="text-align:right;">Total Collected</th>
+              <th style="text-align:right;">Remaining Due</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.categories.map((c: any) => `
+              <tr>
+                <td style="padding:10px 8px; font-weight:bold;">${c.name}</td>
+                <td style="padding:10px 8px; text-align:center; font-weight:600; color:#475569;">${c.count}</td>
+                <td style="padding:10px 8px; text-align:right; font-weight:600;">${printRiyalIcon} ${c.billed.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                <td style="padding:10px 8px; text-align:right; font-weight:600; color:#b45309;">${c.discount ? `-${printRiyalIcon} ${c.discount.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '-'}</td>
+                <td style="padding:10px 8px; text-align:right; font-weight:bold; color:#0f172a;">${printRiyalIcon} ${c.netBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                <td style="padding:10px 8px; text-align:right; font-weight:900; color:#16a34a;">${printRiyalIcon} ${c.paid.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+                <td style="padding:10px 8px; text-align:right; font-weight:900; color:#dc2626;">${printRiyalIcon} ${c.due.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td style="text-align:left; padding:12px 8px; font-weight:bold; font-size:13px;">GRAND TOTAL:</td>
+              <td style="text-align:center; padding:12px 8px; font-weight:bold; font-size:13px;">${data.list.length}</td>
+              <td style="text-align:right; padding:12px 8px; font-weight:bold; font-size:13px; border-top:2px double #334155;">
+                ${printRiyalIcon} ${data.totalBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </td>
+              <td style="text-align:right; padding:12px 8px; font-weight:bold; font-size:13px; color:#b45309; border-top:2px double #334155;">
+                ${printRiyalIcon} ${data.totalDiscount.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </td>
+              <td style="text-align:right; padding:12px 8px; font-weight:bold; font-size:13px; border-top:2px double #334155;">
+                ${printRiyalIcon} ${data.totalNetBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </td>
+              <td style="text-align:right; padding:12px 8px; font-weight:900; font-size:14px; color:#16a34a; border-top:2px double #334155;">
+                ${printRiyalIcon} ${data.totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </td>
+              <td style="text-align:right; padding:12px 8px; font-weight:900; font-size:14px; color:#dc2626; border-top:2px double #334155;">
+                ${printRiyalIcon} ${data.totalDue.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      `;
+    } else if (reportData.type === 'income_list') {
       const data = reportData as any;
       bodyContent = `
         <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:15px; margin:20px 0; display:grid; grid-template-columns: repeat(4, 1fr); gap:15px; text-align:center;">
@@ -730,13 +826,7 @@ export default function ReportTab({
       `;
     }
 
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
-      addToast('Popup window blocked! Please allow popups in your browser settings.', 'error');
-      return;
-    }
-
-    printWindow.document.write(`
+    return `
       <!DOCTYPE html>
       <html>
       <head>
@@ -801,16 +891,133 @@ export default function ReportTab({
           </div>
         </div>
 
+        ${includePrintScript ? `
         <script>
           window.onload = function() {
             window.print();
             window.onafterprint = function() { window.close(); }
           }
         </script>
+        ` : ''}
       </body>
       </html>
-    `);
+    `;
+  };
+
+  // Professional Print Handler
+  const handlePrint = () => {
+    const fullHtml = buildFullReportHtml(true);
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      addToast('Please allow pop-ups to print statements', 'error');
+      return;
+    }
+    printWindow.document.open();
+    printWindow.document.write(fullHtml);
     printWindow.document.close();
+  };
+
+  // Dedicated PDF Download Handler
+  const handleDownloadPdf = async () => {
+    if (isGeneratingPdf) return;
+    setIsGeneratingPdf(true);
+    addToast('Generating PDF statement...', 'info');
+
+    try {
+      const container = document.createElement('div');
+      container.id = 'temp-pdf-export-container';
+      container.style.position = 'fixed';
+      container.style.left = '-99999px';
+      container.style.top = '0';
+      container.style.width = '800px';
+      container.style.backgroundColor = '#ffffff';
+      container.style.padding = '24px';
+      container.style.boxSizing = 'border-box';
+      container.style.zIndex = '-9999';
+
+      container.innerHTML = buildFullReportHtml(false);
+      document.body.appendChild(container);
+
+      // Wait a moment for layout and styles to settle
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      const canvas = await html2canvas(container, {
+        scale: 1.5,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        windowWidth: 800
+      });
+
+      document.body.removeChild(container);
+
+      const pdf = new jsPDF({
+        orientation: 'p',
+        unit: 'mm',
+        format: 'a4',
+        compress: true
+      });
+      const pageWidth = 210;
+      const pageHeight = 297;
+      const margin = 10;
+      const imgWidth = pageWidth - (margin * 2);
+      const pageUsableHeight = pageHeight - (margin * 2);
+
+      const totalImgHeight = (canvas.height * imgWidth) / canvas.width;
+
+      if (totalImgHeight <= pageUsableHeight) {
+        // High quality JPEG compression (0.82) reduces document image size by 90-95%
+        const imgData = canvas.toDataURL('image/jpeg', 0.82);
+        pdf.addImage(imgData, 'JPEG', margin, margin, imgWidth, totalImgHeight, undefined, 'FAST');
+      } else {
+        const pxPageHeight = Math.floor((pageUsableHeight * canvas.width) / imgWidth);
+        let renderedHeight = 0;
+        let pageIndex = 0;
+
+        while (renderedHeight < canvas.height) {
+          const sliceHeight = Math.min(pxPageHeight, canvas.height - renderedHeight);
+
+          const pageCanvas = document.createElement('canvas');
+          pageCanvas.width = canvas.width;
+          pageCanvas.height = sliceHeight;
+          const ctx = pageCanvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
+            ctx.drawImage(
+              canvas,
+              0, renderedHeight, canvas.width, sliceHeight,
+              0, 0, canvas.width, sliceHeight
+            );
+          }
+
+          if (pageIndex > 0) {
+            pdf.addPage();
+          }
+
+          const sliceMmHeight = (sliceHeight * imgWidth) / canvas.width;
+          // High quality JPEG compression (0.82) keeps text sharp while keeping total size under 1MB
+          const sliceData = pageCanvas.toDataURL('image/jpeg', 0.82);
+          pdf.addImage(sliceData, 'JPEG', margin, margin, imgWidth, sliceMmHeight, undefined, 'FAST');
+
+          renderedHeight += sliceHeight;
+          pageIndex++;
+        }
+      }
+
+      const safeTitle = getReportTitle(activeReport).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const safeDate = new Date().toISOString().split('T')[0];
+      const fileName = `CEC_${safeTitle}_${safeDate}.pdf`;
+
+      pdf.save(fileName);
+      addToast(`PDF downloaded: ${fileName}`, 'success');
+    } catch (err) {
+      console.error('Failed to generate PDF:', err);
+      addToast('PDF download failed. Opening print window as fallback.', 'error');
+      handlePrint();
+    } finally {
+      setIsGeneratingPdf(false);
+    }
   };
 
   return (
@@ -832,14 +1039,35 @@ export default function ReportTab({
             </p>
           </div>
 
-          {/* Quick Print Button */}
-          <button
-            onClick={handlePrint}
-            className="w-full sm:w-auto bg-slate-900 hover:bg-emerald-600 text-white px-5 py-3 rounded-2xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-md transition shrink-0"
-          >
-            <Printer className="w-4 h-4" />
-            <span>Print / PDF Statement</span>
-          </button>
+          {/* Quick Action Buttons: Print & Download PDF */}
+          <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap">
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="flex-1 sm:flex-initial bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 px-4 py-3 rounded-2xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 transition cursor-pointer shadow-xs"
+            >
+              <Printer className="w-4 h-4 text-slate-600" />
+              <span>Print Statement</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={isGeneratingPdf}
+              className="flex-1 sm:flex-initial bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-3 rounded-2xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-md shadow-emerald-700/20 transition cursor-pointer disabled:opacity-60 shrink-0"
+            >
+              {isGeneratingPdf ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Generating PDF...</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4" />
+                  <span>Download PDF</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Dropdown Selectors Grid */}
@@ -872,7 +1100,7 @@ export default function ReportTab({
                 </optgroup>
                 <optgroup label="📈 Income Reports">
                   <option value="Income_All">Total Incomes Report (All)</option>
-                  <option value="Income_Overview">Income Overview (Cash vs Bank & Dues)</option>
+                  <option value="Income_Overview">Income Overview (by Category)</option>
                   <option value="Income_Bank">Company Bank Inflows</option>
                   <option value="Income_Maintenance">Yearly Lift Maintenance</option>
                   <option value="Income_Installation">Installation Incomes</option>
@@ -1075,7 +1303,7 @@ export default function ReportTab({
             )}
           </div>
 
-          {/* Lift Search Calculation Filter: All, Income (আয়), Expense (ব্যয়) */}
+          {/* Lift Search Calculation Filter: All, Income, Expense */}
           <div className="flex items-center flex-wrap gap-2">
             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
               Calculation:
@@ -1090,7 +1318,7 @@ export default function ReportTab({
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                All (আয় ও ব্যয়)
+                All (Income & Expense)
               </button>
               <button
                 type="button"
@@ -1101,7 +1329,7 @@ export default function ReportTab({
                     : 'text-emerald-700 hover:text-emerald-900'
                 }`}
               >
-                <span>Income (আয়)</span>
+                <span>Income</span>
               </button>
               <button
                 type="button"
@@ -1112,7 +1340,7 @@ export default function ReportTab({
                     : 'text-rose-700 hover:text-rose-900'
                 }`}
               >
-                <span>Expense (ব্যয়)</span>
+                <span>Expense</span>
               </button>
             </div>
 
@@ -1157,19 +1385,19 @@ export default function ReportTab({
             <div className="flex items-center gap-4 text-xs font-bold self-end sm:self-center">
               {searchViewMode !== 'EXPENSE' && (
                 <div className="text-emerald-700 text-right">
-                  <span className="text-[10px] uppercase text-emerald-600 block">আয় (Income)</span>
+                  <span className="text-[10px] uppercase text-emerald-600 block">Income</span>
                   <span>{((reportData as any).totalPaid || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
                 </div>
               )}
               {searchViewMode !== 'INCOME' && (
                 <div className="text-rose-700 text-right">
-                  <span className="text-[10px] uppercase text-rose-600 block">ব্যয় (Expense)</span>
+                  <span className="text-[10px] uppercase text-rose-600 block">Expense</span>
                   <span>{((reportData as any).totalExpense || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
                 </div>
               )}
               {searchViewMode === 'ALL' && (
                 <div className={`text-right ${(reportData as any).netProfit >= 0 ? 'text-blue-900' : 'text-amber-800'}`}>
-                  <span className="text-[10px] uppercase text-slate-500 block">নেট হিসাব (Margin)</span>
+                  <span className="text-[10px] uppercase text-slate-500 block">Net Margin</span>
                   <span>{((reportData as any).netProfit || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR</span>
                 </div>
               )}
@@ -1198,13 +1426,34 @@ export default function ReportTab({
             </h4>
           </div>
 
-          <button
-            onClick={handlePrint}
-            className="w-full sm:w-auto bg-blue-600 hover:bg-blue-500 text-white px-5 py-3 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-blue-900/30 transition duration-150 shrink-0"
-          >
-            <Printer className="w-4 h-4" />
-            <span>Print Report</span>
-          </button>
+          <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap">
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="flex-1 sm:flex-initial bg-slate-800 hover:bg-slate-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 border border-slate-700 transition cursor-pointer shadow-xs"
+            >
+              <Printer className="w-4 h-4 text-slate-300" />
+              <span>Print</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={isGeneratingPdf}
+              className="flex-1 sm:flex-initial bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2.5 rounded-xl font-bold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-lg shadow-emerald-900/30 transition duration-150 cursor-pointer disabled:opacity-60 shrink-0"
+            >
+              {isGeneratingPdf ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Generating...</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4" />
+                  <span>Download PDF</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Render Live Report Table */}
@@ -1524,8 +1773,100 @@ export default function ReportTab({
             </div>
           )}
 
-          {/* INCOME LIST & OVERVIEW VIEW */}
-          {(reportData.type === 'income_list' || reportData.type === 'income_overview') && (
+          {/* INCOME OVERVIEW VIEW (BY CATEGORY) */}
+          {reportData.type === 'income_overview' && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 bg-white p-4 rounded-2xl border border-slate-200 text-center">
+                <div className="p-3 border-r border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Total Collected</p>
+                  <p className="text-lg font-black text-emerald-600 mt-1">
+                    {(reportData as any).totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                  </p>
+                </div>
+                <div className="p-3 border-r border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">My Cash</p>
+                  <p className="text-lg font-black text-slate-800 mt-1">
+                    {(reportData as any).paidCash.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                  </p>
+                </div>
+                <div className="p-3 border-r border-slate-100">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Company Bank</p>
+                  <p className="text-lg font-black text-blue-600 mt-1">
+                    {(reportData as any).paidBank.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                  </p>
+                </div>
+                <div className="p-3">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Remaining Due</p>
+                  <p className="text-lg font-black text-rose-600 mt-1">
+                    {(reportData as any).totalDue.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <table className="w-full text-left text-xs whitespace-nowrap">
+                  <thead className="bg-slate-900 text-white text-[10px] font-bold uppercase">
+                    <tr>
+                      <th className="p-4">Income Category</th>
+                      <th className="p-4 text-center">Contracts</th>
+                      <th className="p-4 text-right">Gross Bill</th>
+                      <th className="p-4 text-right text-amber-300">Discount</th>
+                      <th className="p-4 text-right text-blue-300">Net Bill</th>
+                      <th className="p-4 text-right text-emerald-300">Total Collected</th>
+                      <th className="p-4 text-right text-rose-300">Remaining Due</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {(reportData as any).categories.map((c: any, idx: number) => (
+                      <tr key={idx} className="hover:bg-slate-50">
+                        <td className="p-4 font-bold text-slate-800">{c.name}</td>
+                        <td className="p-4 text-center font-bold text-slate-600">{c.count}</td>
+                        <td className="p-4 text-right font-medium text-slate-700">
+                          {c.billed.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                        </td>
+                        <td className="p-4 text-right font-medium text-amber-700">
+                          {c.discount ? `-${c.discount.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR` : '-'}
+                        </td>
+                        <td className="p-4 text-right font-bold text-blue-900">
+                          {c.netBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                        </td>
+                        <td className="p-4 text-right font-black text-emerald-600">
+                          {c.paid.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                        </td>
+                        <td className="p-4 text-right font-black text-rose-600">
+                          {c.due.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot className="bg-slate-50 border-t-2 border-slate-300 font-black">
+                    <tr>
+                      <td className="p-4 uppercase">Grand Totals:</td>
+                      <td className="p-4 text-center">{(reportData as any).list.length}</td>
+                      <td className="p-4 text-right">
+                        {(reportData as any).totalBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                      </td>
+                      <td className="p-4 text-right text-amber-700">
+                        {(reportData as any).totalDiscount.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                      </td>
+                      <td className="p-4 text-right text-blue-900">
+                        {(reportData as any).totalNetBilled.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                      </td>
+                      <td className="p-4 text-right text-emerald-600 text-sm">
+                        {(reportData as any).totalPaid.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                      </td>
+                      <td className="p-4 text-right text-rose-600 text-sm">
+                        {(reportData as any).totalDue.toLocaleString('en-US', { minimumFractionDigits: 2 })} SAR
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* INCOME LIST VIEW */}
+          {reportData.type === 'income_list' && (
             <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-900 text-white text-[10px] font-bold uppercase">
